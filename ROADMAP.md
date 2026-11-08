@@ -1,0 +1,78 @@
+# Roadmap
+
+## Milestone 0 – Scaffolding ✅
+- [x] pyproject.toml, src layout, editable install, `mlb-manager` console script
+- [x] unittest test framework
+- [x] Project documentation (README, CLAUDE.md, PROJECT_STATE.md, ROADMAP.md)
+
+## Milestone 1 – MVP (playable first version) ✅ v0.1.0
+- [x] 30 franchises, AL/NL with real divisions
+- [x] Fictional generated players with position-specific attributes
+- [x] Active (26) rosters and reserves, roster moves
+- [x] Single-game simulation with box scores
+- [x] 162-game schedule and standings with tiebreakers
+- [x] 12-team postseason
+- [x] Interactive terminal interface
+- [x] JSON franchise saves
+- [x] Multi-season play with aging/development
+
+## Milestone 2 – GM & franchise management ✅ v0.2.0
+Revised scope (replaces the earlier "Depth" and "Front office" milestones):
+lightweight, Retro Bowl-style front office adapted to MLB. Gameplay over
+financial realism.
+
+**Contracts & cap**
+- [x] Salary, contract length, years remaining, expiration status for every player
+- [x] Configurable hard salary cap (default $125M, `--salary-cap`) for signings and trades
+- [x] Own-player re-signing/extensions allowed above the cap
+- [x] Releases with current-season dead money
+- [x] Payroll, cap space, future commitments, approaching free agency views
+
+**Trades**
+- [x] Player-for-player, multi-player, draft-pick and mixed trades
+- [x] CPU valuation: ability, potential, age, position, roster need, depth,
+      contract surplus, competitive strategy
+- [x] Contending / balanced / rebuilding CPU strategies
+- [x] CPU counter-offers; CPU-initiated offers to the user (accept/reject/counter)
+- [x] CPU-to-CPU trades (contenders buy veterans from rebuilders)
+- [x] Anti-exploit: diminishing returns on bundles, contract-aware values,
+      acceptance premium, deterministic answers, cap and roster checks, trade deadline
+
+**Draft**
+- [x] Annual 5-round draft, 200-prospect generated classes with realistic positions
+- [x] Order from previous standings (worst first, playoff clubs last)
+- [x] CPU selections from strategy-weighted, imperfect scouting boards
+- [x] Prospect potential, development trajectories, rookie contracts
+- [x] Tradable picks for the next three drafts
+
+**Free agency**
+- [x] Market of released/expiring players; asking contracts; negotiation band
+- [x] CPU signings driven by need, strategy and cap space
+
+**Development & minor leagues**
+- [x] Growth toward potential (fast / normal / slow), breakouts and busts
+- [x] Plateau then decline with age; retirements
+- [x] Reserves act as the minor league system (organisation limit 45)
+- [x] Promote / demote / swap / release; CPU best-26 organisation management
+- [x] Imperfect scouting (own organisation scouted more accurately)
+
+**Offseason flow**: season complete → re-signing period → draft → free agency → next season.
+
+**Technical**: save format v2 with automatic v1 migration; deterministic seeds preserved.
+
+## Milestone 3 – Depth (next)
+- [ ] Injuries and injured list, with CPU call-ups
+- [ ] Separate postseason and career statistics; awards (MVP, Cy Young, ROY)
+- [ ] Player morale / contract-year effects; no-trade clauses
+- [ ] Optional luxury tax (soft cap) as an alternative cap mode
+- [ ] Trade block and "what would it take?" asking-price feature
+- [ ] Tighter schedule packing (≈186 days), higher stolen-base volume
+
+## Milestone 4 – In-game management
+- [ ] Play-by-play mode for the user's games
+- [ ] Manual pitching changes, pinch hitters, steals, bunts, intentional walks
+
+## Technical backlog
+- [ ] Optional type checking (mypy) and linting configuration
+- [ ] Further sim performance work (~4 s per season today)
+- [ ] League gets slightly younger over many seasons (avg active age 28 → ~27 after 6 years); revisit aging curve
