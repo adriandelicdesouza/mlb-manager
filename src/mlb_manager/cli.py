@@ -211,6 +211,8 @@ class App:
             "12": self.simulate_menu,
             "13": self.save_menu,
             "14": self.front_office_menu,
+            "15": self.injury_menu,
+            "16": self.season_center,
         }
         while True:
             self.say("")
@@ -233,6 +235,8 @@ class App:
                     ("12", "SIMULATE"),
                     ("13", "Save franchise"),
                     ("14", "FRONT OFFICE (contracts, trades, draft, free agency, prospects)"),
+                    ("15", f"Injuries & injured list ({len(self.league.injured_players(self.league.user))})"),
+                    ("16", "Season center (milestones, awards, summary, franchise history)"),
                     ("0", "Quit to main menu"),
                 ],
             )
@@ -441,6 +445,9 @@ class App:
         if lg.phase == PHASE_COMPLETE:
             self.say("")
             self.say(views.bracket_view(lg))
+            self.say("")
+            self.say("The season is over: see the Season center (16) for the season summary, "
+                     "awards and franchise history.")
 
     def say_news(self, items: list[str]) -> None:
         for item in items:
@@ -810,6 +817,60 @@ class App:
                 self.dirty = True
             except roster.RosterError as exc:
                 self.say(f"Not allowed: {exc}")
+
+    # ------------------------------------------------------------------ injuries & season
+
+    def injury_menu(self) -> None:
+        lg, team = self.league, self.league.user
+        while True:
+            self.say("")
+            self.say(views.injury_report(lg, team))
+            choice = self.menu("Injuries & injured list", [
+                ("1", "Place an injured player on the IL (frees an active spot)"),
+                ("2", "Activate a healthy player from the IL"),
+                ("0", "Back"),
+            ])
+            if choice == "0":
+                return
+            pid = self.ask_int("Player ID (Enter to cancel): ", 1)
+            if pid is None or pid not in lg.players:
+                continue
+            try:
+                if choice == "1":
+                    for note in lg.place_on_il(team, pid):
+                        self.say(f"  - {note}")
+                else:
+                    self.say(lg.activate_from_il(team, pid))
+                    if pid in team.reserves:
+                        self.say("Promote him from Front Office > Minor League once a spot opens.")
+                self.dirty = True
+            except roster.RosterError as exc:
+                self.say(f"Not allowed: {exc}")
+
+    def season_center(self) -> None:
+        lg = self.league
+        while True:
+            choice = self.menu("Season center", [
+                ("1", "Season milestones"),
+                ("2", "Awards"),
+                ("3", "Season summary"),
+                ("4", "Franchise history"),
+                ("0", "Back"),
+            ])
+            if choice == "0":
+                return
+            if choice == "1":
+                self.say(views.milestones_view(lg))
+            elif choice == "2":
+                years = [item["year"] for item in lg.awards_history]
+                year = None
+                if len(years) > 1:
+                    year = self.ask_int(f"Year ({years[0]}-{years[-1]}, Enter = latest): ", years[0], years[-1])
+                self.say(views.awards_view(lg, year if year is not None else (years[-1] if years else None)))
+            elif choice == "3":
+                self.say(views.season_summary(lg))
+            else:
+                self.say(views.franchise_history(lg))
 
     # ------------------------------------------------------------------ saving
 

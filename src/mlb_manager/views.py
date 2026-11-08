@@ -162,7 +162,7 @@ def hitters_table(players: Sequence[Player], positions: dict[int, str] | None = 
     for p in players:
         pos = (positions or {}).get(p.id, p.position)
         rows.append([
-            p.id, p.name, pos, _positions(p), p.age, _hand(p), p.overall_at(pos) if pos != "-" else p.overall,
+            p.id, display_name(p), pos, _positions(p), p.age, _hand(p), p.overall_at(pos) if pos != "-" else p.overall,
             p.rating("contact"), p.rating("power"), p.rating("eye"), p.rating("speed"),
             p.rating("fielding"), p.rating("arm"), p.rating("range"),
             p.ratings.get("framing", "-"),
@@ -180,7 +180,7 @@ def pitchers_table(players: Sequence[Player], roles: dict[int, str] | None = Non
     for p in players:
         s = p.pitching
         rows.append([
-            p.id, p.name, (roles or {}).get(p.id, p.position), p.age, p.throws, p.overall,
+            p.id, display_name(p), (roles or {}).get(p.id, p.position), p.age, p.throws, p.overall,
             p.rating("stuff"), p.rating("control"), p.rating("movement"), p.rating("stamina"),
             p.fatigue, f"{s.w}-{s.l}", s.sv, f"{s.era:.2f}", s.ip_display, s.so,
         ])
@@ -242,7 +242,8 @@ def lineup_view(league: League, team: Team) -> str:
         f"{team.full_name} - starting lineup",
         table(["#", "Pos", "ID", "Name", "Elig", "B", "CON", "POW", "EYE", "SPD", "DEF",
                "AVG", "HR", "OPS"], rows, "rlrllcrrrrrrrr"),
-        "(!) = playing out of position (defensive penalty)",
+        "(!) = playing out of position (defensive penalty);  [INJ] = injured: a healthy "
+        "bench player starts in his place until he returns",
         "",
         "Bench",
         hitters_table(roster.bench(team, players), {p.id: p.position for p in roster.bench(team, players)}),
@@ -325,6 +326,9 @@ def player_card(league: League, p: Player) -> str:
         lines.append("  No games played yet.")
     if p.is_pitcher:
         lines.append(f"Current fatigue: {p.fatigue}")
+    if p.is_injured:
+        lines.append(f"INJURED: {p.injury}, about {p.injury_days} day(s) remaining")
+    lines.append(f"MLB service: {p.service_years} season(s)" + (" (rookie)" if p.service_years == 0 else ""))
     return "\n".join(lines)
 
 
@@ -512,6 +516,9 @@ def dashboard(league: League) -> str:
     if league.in_offseason:
         out.append(f"Offseason phase: {PHASE_LABELS[league.phase]}  (continue via SIMULATE)")
     space = contracts.cap_space(team, league.players, league.salary_cap)
+    hurt = league.injured_players(team)
+    if hurt:
+        out.append(f"Injuries: {len(hurt)} ({len(team.injured_list)} on the IL) - see Injuries (15)")
     out.append(
         f"Payroll {contracts.money(contracts.payroll(team, league.players))} / cap "
         f"{contracts.money(league.salary_cap)} (space {contracts.money(space)})   "
@@ -773,3 +780,133 @@ def transactions_view(league: League, limit: int = 25) -> str:
 
 def pick_label(pick: DraftPick) -> str:
     return f"{pick.pick_id} ({pick.label()})"
+
+
+# ----------------------------------------------------------------------------- season experience
+
+
+def display_name(p: Player) -> str:
+    return f"{p.name} [INJ]" if p.is_injured else p.name
+
+
+def injury_report(league: League, team: Team) -> str:
+    hurt = league.injured_players(team)
+    lines = [f"{team.full_name} - injury report   (IL players do not count against the 26-man roster)"]
+    if not hurt:
+        lines.append("No injuries. Everyone is healthy.")
+        return "\n".join(lines)
+    rows = []
+    for p in hurt:
+        if p.id in team.injured_list:
+            status = "IL" if p.is_injured else "IL - healthy, ready to activate"
+        elif p.id in team.active:
+            status = "Active (sits until healthy)"
+        else:
+            status = "Minors"
+        rows.append([p.id, p.name, p.position, p.overall, p.injury or "-", p.injury_days or "-", status])
+    lines.append(table(["ID", "Name", "Pos", "OVR", "Injury", "Days", "Status"], rows, "rllrlrl"))
+    lines.append(f"Active roster {len(team.active)}/{roster.MAX_ACTIVE}; injured list {len(team.injured_list)}.")
+    return "\n".join(lines)
+
+
+def milestones_view(league: League, limit: int = 40) -> str:
+    if not league.milestones:
+        return f"No {league.year} milestones yet."
+    return f"{league.year} season milestones\n" + "\n".join(f"  * {m}" for m in league.milestones[-limit:])
+
+
+def awards_view(league: League, year: int | None = None) -> str:
+    from mlb_manager import awards as awards_mod
+
+    entries = league.season_awards(year)
+    year = league.year if year is None else year
+    if not entries:
+        return f"No awards for {year} yet (awards are announced at the end of the regular season)."
+    lines = [f"{year} MLB awards"]
+    for lg in ("AL", "NL"):
+        lines.append("")
+        lines.append(LEAGUE_NAMES[lg])
+        mine = [e for e in entries if e["award"].startswith(lg)]
+        rows = []
+        for e in awards_mod.headline_awards(mine):
+            rows.append([e["award"][3:], e["name"], e["team"], e["line"]])
+        lines.append(table(["Award", "Player", "Team", "Season"], rows, "llll"))
+        gg = [e for e in mine if "Gold Glove" in e["award"]]
+        ss = [e for e in mine if "Silver Slugger" in e["award"]]
+        lines.append("Gold Gloves:     " + ", ".join(f"{e['position']} {e['name']} ({e['team']})" for e in gg))
+        lines.append("Silver Sluggers: " + ", ".join(f"{e['position']} {e['name']} ({e['team']})" for e in ss))
+    user = [e for e in entries if e["team"] == league.user_team]
+    if user:
+        lines += ["", f"{league.user_team} winners: " + ", ".join(f"{e['name']} ({e['award']})" for e in user)]
+    return "\n".join(lines)
+
+
+def season_summary(league: League) -> str:
+    records = league.records()
+    team = league.user
+    rec = records[team.abbr]
+    players = [league.players[pid] for pid in team.all_players]
+    hitters = [p for p in players if not p.is_pitcher and p.batting.pa]
+    pitchers = [p for p in players if p.is_pitcher and p.pitching.outs]
+    ab = sum(p.batting.ab for p in hitters)
+    hits = sum(p.batting.h for p in hitters)
+    outs = sum(p.pitching.outs for p in pitchers)
+    er = sum(p.pitching.er for p in pitchers)
+    lines = [
+        title(f"{league.year} season summary - {team.full_name}"),
+        f"Record {rec.wins}-{rec.losses} ({pct(rec.pct)}), runs {rec.runs_for} scored / "
+        f"{rec.runs_against} allowed ({rec.run_diff:+d})",
+        f"Team AVG {pct(hits / ab) if ab else '.000'}, team ERA {er * 27 / outs:.2f}" if outs else "",
+        f"Postseason: {league.postseason_finish(team.abbr)}" if league.playoffs else
+        "Postseason: not started",
+    ]
+    best_hitters = sorted((p for p in hitters if p.batting.pa >= 150), key=lambda p: -p.batting.ops)[:3]
+    best_pitchers = sorted((p for p in pitchers if p.pitching.outs >= 120), key=lambda p: p.pitching.era)[:3]
+    if best_hitters:
+        lines.append("Top hitters:   " + "; ".join(
+            f"{p.name} {pct(p.batting.avg)}/{pct(p.batting.obp)}/{pct(p.batting.slg)}, {p.batting.hr} HR"
+            for p in best_hitters))
+    if best_pitchers:
+        lines.append("Top pitchers:  " + "; ".join(
+            f"{p.name} {p.pitching.w}-{p.pitching.l}, {p.pitching.era:.2f} ERA" for p in best_pitchers))
+    lines += ["", "Division leaders:" if league.phase == PHASE_REGULAR else "Division winners:"]
+    for lg in LEAGUES:
+        for div in DIVISIONS:
+            leader = division_standings(league.teams, records, lg, div)[0]
+            r = records[leader]
+            lines.append(f"  {lg} {div:<8} {league.teams[leader].full_name} ({r.wins}-{r.losses})")
+    if league.playoffs and league.playoffs.champion:
+        lines.append(f"World Series champion: {league.teams[league.playoffs.champion].full_name}")
+    lines += ["", leaders_view(league, limit=3)]
+    if league.season_awards():
+        lines += ["", awards_view(league)]
+    return "\n".join(line for line in lines if line is not None)
+
+
+def franchise_history(league: League) -> str:
+    team = league.user
+    lines = [title(f"{team.full_name} - franchise history")]
+    if league.history:
+        rows = [[h["year"], f"{h['user_wins']}-{h['user_losses']}", h["user_result"], h["champion"],
+                 ", ".join(f"{a['award'][3:]}: {a['name']}" for a in h.get("awards", []) if a["team"] == team.abbr) or "-"]
+                for h in league.history]
+        lines.append(table(["Year", "Record", "Result", "Champion", "Our award winners"], rows, "rrlll"))
+        titles = [h["year"] for h in league.history if h["champion"] == team.abbr]
+        playoffs = [h for h in league.history if h["user_result"] != "Missed playoffs"]
+        wins = sum(h["user_wins"] for h in league.history)
+        losses = sum(h["user_losses"] for h in league.history)
+        lines.append("")
+        lines.append(f"Seasons: {len(league.history)}   All-time record: {wins}-{losses}   "
+                     f"Playoff appearances: {len(playoffs)}   Championships: "
+                     f"{len(titles)}{' (' + ', '.join(map(str, titles)) + ')' if titles else ''}")
+    else:
+        lines.append("No completed seasons yet.")
+    for kind, heading in (("championship", "Championships"), ("award", "Awards"),
+                          ("postseason", "Postseason"), ("transaction", "Major transactions")):
+        events = [e for e in league.franchise_log if e["kind"] == kind]
+        if events:
+            lines += ["", heading]
+            lines.extend(f"  {e['year']}: {e['text']}" for e in events[-15:])
+    if league.history:
+        lines += ["", "League champions: " + ", ".join(f"{h['year']} {h['champion']}" for h in league.history)]
+    return "\n".join(lines)

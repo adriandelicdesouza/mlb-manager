@@ -144,3 +144,50 @@ class FrontOfficeCliTests(unittest.TestCase):
         self.assertEqual(league.players[prospect].team, "DET")
         self.assertEqual(league.players[keep.id].team, "DET")
         self.assertEqual(league.players[fa.id].team, "DET")
+
+
+class InSeasonCliTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def run_app(self, league: League, answers: list[str]) -> str:
+        io_ = ScriptedIO(answers)
+        App(io_.input, io_.output, save_dir=self.dir).run(league)
+        return io_.text
+
+    def test_injury_menu_il_and_activation(self) -> None:
+        from mlb_manager import injuries
+
+        league = League.create(seed=310, user_team="NYY")
+        team = league.user
+        hurt = team.lineup[1].player_id
+        healthy = team.lineup[2].player_id
+        injuries.apply_injury(league.players[hurt], "oblique strain", 25)
+        text = self.run_app(league, [
+            "15",
+            "1", str(healthy),     # rejected: healthy
+            "1", str(hurt),        # placed on IL
+            "2", str(hurt),        # rejected: still injured
+            "0", "0", "n", "0",
+        ])
+        self.assertIn("injury report", text)
+        self.assertIn("only injured players go on the IL", text)
+        self.assertIn("placed", text)
+        self.assertIn("still injured", text)
+        self.assertIn(hurt, team.injured_list)
+        injuries.heal_fully(league.players[hurt])
+        text = self.run_app(league, ["15", "2", str(hurt), "0", "0", "n", "0"])
+        self.assertIn("activated", text)
+        self.assertNotIn(hurt, team.injured_list)
+
+    def test_season_center(self) -> None:
+        league = League.create(seed=311, user_team="BOS")
+        league.sim_days(40)
+        text = self.run_app(league, ["16", "1", "2", "3", "4", "0", "0", "n", "0"])
+        for expected in ("milestones", "No awards for 2026 yet", "season summary",
+                         "franchise history"):
+            self.assertIn(expected, text)
