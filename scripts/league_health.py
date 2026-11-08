@@ -3,6 +3,7 @@
 Usage: .venv/bin/python scripts/league_health.py [seasons] [seed]
 """
 
+import json
 import statistics
 import sys
 import time
@@ -23,12 +24,16 @@ def main() -> None:
         pays = sorted(contracts.payroll(t, lg.players) for t in lg.teams.values())
         runs = sum(p.batting.r for p in lg.players.values()) / 4860
         trades = sum(x.startswith(str(lg.year)) and "TRADE" in x for x in lg.transactions)
+        injuries = sum(1 for p in lg.players.values() for h in p.injury_history if h["y"] == lg.year)
+        moods = [lg.players[pid].morale for t in lg.teams.values() for pid in t.all_players]
+        save_mb = len(json.dumps(lg.to_dict(), separators=(",", ":"))) / 1e6
         print(
             f"{lg.year} activeOVR {statistics.mean(p.overall for p in active):.1f} "
             f"age {statistics.mean(p.age for p in active):.1f} R/G {runs:.2f} "
             f"wins {wins[0]}-{wins[-1]} payroll {pays[0]:.0f}/{pays[15]:.0f}/{pays[-1]:.0f} "
             f"players {len(lg.players)} trades {trades} champion {lg.playoffs.champion} "
-            f"({time.time() - start:.1f}s)"
+            f"injuries {injuries} morale {statistics.mean(moods):.0f} (<30: {sum(m < 30 for m in moods)}) "
+            f"retired {len(lg.retired)} save {save_mb:.1f}MB ({time.time() - start:.1f}s)"
         )
         for team in lg.teams.values():
             problems = roster.validate(team, lg.players)

@@ -11,7 +11,7 @@ from mlb_manager import ratings as rt
 from mlb_manager import roster
 from mlb_manager.franchises import DIVISIONS, FRANCHISES, LEAGUE_NAMES, LEAGUES
 from mlb_manager.game import GameResult, TeamBox
-from mlb_manager import contracts, development, freeagency, frontoffice, trades
+from mlb_manager import careers, contracts, development, freeagency, frontoffice, injuries, morale, trades
 from mlb_manager.draft import DraftPick
 from mlb_manager.league import (
     PHASE_COMPLETE,
@@ -22,7 +22,7 @@ from mlb_manager.league import (
     DayReport,
     League,
 )
-from mlb_manager.models import Player, Team
+from mlb_manager.models import BattingStats, PitchingStats, Player, RetiredPlayer, Team
 from mlb_manager.playoffs import ROUND_NAMES
 from mlb_manager.standings import (
     division_standings,
@@ -309,27 +309,113 @@ def player_card(league: League, p: Player) -> str:
         ))
     b, s = p.batting, p.pitching
     lines.append("")
-    lines.append(f"{league.year} season")
-    if b.pa:
-        lines.append(table(
-            ["G", "PA", "AB", "R", "H", "2B", "3B", "HR", "RBI", "BB", "SO", "SB", "AVG", "OBP", "SLG", "OPS"],
-            [[b.g, b.pa, b.ab, b.r, b.h, b.doubles, b.triples, b.hr, b.rbi, b.bb, b.so, b.sb,
-              pct(b.avg), pct(b.obp), pct(b.slg), f"{b.ops:.3f}"]], "r" * 16,
-        ))
-    if s.g:
-        lines.append(table(
-            ["G", "GS", "W", "L", "SV", "IP", "H", "R", "ER", "BB", "SO", "HR", "ERA", "WHIP"],
-            [[s.g, s.gs, s.w, s.l, s.sv, s.ip_display, s.h, s.r, s.er, s.bb, s.so, s.hr,
-              f"{s.era:.2f}", f"{s.whip:.2f}"]], "r" * 14,
-        ))
-    if not b.pa and not s.g:
+    lines.append(f"{league.year} regular season")
+    if b.pa or s.g:
+        lines.append(stat_table(p.is_pitcher, [("", b, s)]))
+    else:
         lines.append("  No games played yet.")
+    post_b, post_s = careers.current_postseason(p)
+    if not (post_b.is_empty and post_s.is_empty):
+        lines += ["", f"{league.year} postseason"]
+        lines.append(stat_table(p.is_pitcher, [("", post_b, post_s)]))
+    lines += ["", career_section(league, p)]
     if p.is_pitcher:
         lines.append(f"Current fatigue: {p.fatigue}")
-    if p.is_injured:
-        lines.append(f"INJURED: {p.injury}, about {p.injury_days} day(s) remaining")
+    lines += ["", health_section(league, p)]
+    if p.team:
+        lines.append(morale_section(league, p, detailed=p.team == league.user_team))
     lines.append(f"MLB service: {p.service_years} season(s)" + (" (rookie)" if p.service_years == 0 else ""))
     return "\n".join(lines)
+
+
+BATTING_HEADERS = ["G", "AB", "R", "H", "2B", "3B", "HR", "RBI", "BB", "SO", "SB", "AVG", "OBP", "SLG", "OPS"]
+PITCHING_HEADERS = ["G", "GS", "W", "L", "SV", "IP", "H", "ER", "BB", "SO", "HR", "ERA", "WHIP"]
+
+
+def batting_cells(b: BattingStats) -> list[object]:
+    return [b.g, b.ab, b.r, b.h, b.doubles, b.triples, b.hr, b.rbi, b.bb, b.so, b.sb,
+            pct(b.avg), pct(b.obp), pct(b.slg), pct(b.ops)]
+
+
+def pitching_cells(s: PitchingStats) -> list[object]:
+    return [s.g, s.gs, s.w, s.l, s.sv, s.ip_display, s.h, s.er, s.bb, s.so, s.hr,
+            f"{s.era:.2f}", f"{s.whip:.2f}"]
+
+
+def stat_table(pitcher: bool, rows: Sequence[tuple[str, BattingStats, PitchingStats]],
+               label: str = "") -> str:
+    """Batting or pitching table; the first column is a free-form label (year/team)."""
+    headers = PITCHING_HEADERS if pitcher else BATTING_HEADERS
+    body = [[name, *(pitching_cells(s) if pitcher else batting_cells(b))] for name, b, s in rows]
+    if not label and all(not name for name, _, _ in rows):
+        return table(headers, [r[1:] for r in body], "r" * len(headers))
+    return table([label, *headers], body, "l" + "r" * len(headers))
+
+
+def career_section(league: League, p: Player | RetiredPlayer) -> str:
+    """Year-by-year regular-season career, plus postseason and World Series totals."""
+    rows = careers.season_rows(p, league.year)
+    lines = ["Career (regular season)"]
+    if not rows:
+        lines.append("  No MLB statistics yet (careers are tracked from the league's first season).")
+        return "\n".join(lines)
+    body = [(f"{r.year} {r.team}", r.batting, r.pitching) for r in rows]
+    bat, pit = careers.career_totals(p, league.year)
+    body.append(("Total", bat, pit))
+    lines.append(stat_table(p.is_pitcher, body, "Season"))
+    post_rows = careers.postseason_rows(p, league.year)
+    if post_rows:
+        pb, ps = careers.postseason_totals(p, league.year)
+        wb, ws = careers.world_series_totals(p, league.year)
+        lines += ["", "Postseason (never combined with the regular season)"]
+        body = [(f"{r.year} {r.team}", r.batting, r.pitching) for r in post_rows]
+        body.append(("Total", pb, ps))
+        if not (wb.is_empty and ws.is_empty):
+            body.append(("World Series", wb, ws))
+        lines.append(stat_table(p.is_pitcher, body, "Postseason"))
+    honours = [f"{e['year'] if 'year' in e else ''} {e['award']}".strip() for e in player_awards(league, p.id)]
+    if honours:
+        lines += ["", "Awards: " + ", ".join(honours)]
+    return "\n".join(lines)
+
+
+def player_awards(league: League, player_id: int) -> list[dict[str, object]]:
+    out: list[dict[str, object]] = []
+    for item in league.awards_history:
+        for entry in item["entries"]:
+            if entry["player_id"] == player_id:
+                out.append({"year": item["year"], "award": entry["award"]})
+    for entry in league.postseason_awards:
+        if entry["player_id"] == player_id:
+            out.append({"year": entry["year"], "award": entry["award"]})
+    return sorted(out, key=lambda e: (e["year"], str(e["award"])))
+
+
+def health_section(league: League, p: Player) -> str:
+    trait = injuries.durability(p, league.seed)
+    lines = [f"Health: {'injured' if p.is_injured else 'healthy'}   Durability: {trait}"]
+    if p.is_injured:
+        where = " (rehab assignment)" if p.rehab else ""
+        lines.append(f"  INJURED: {p.injury}, about {p.injury_days} day(s) remaining{where}")
+    if p.rust_days:
+        lines.append(f"  Rusty after injury: reduced form for ~{p.rust_days} more day(s)")
+    if p.injury_history:
+        lines.append("  Injury history: " + "; ".join(
+            f"{h['y']} {h['i']} ({h['n']}d)" for h in reversed(p.injury_history[-6:])))
+    return "\n".join(lines)
+
+
+def morale_section(league: League, p: Player, detailed: bool = True) -> str:
+    text = f"Morale: {p.morale} ({morale.label(p.morale)})"
+    mod = morale.performance_modifier(p)
+    if mod:
+        text += f"   in-game effect {mod:+d}"
+    if not detailed:
+        return text
+    reasons = morale.factors(league, p)
+    if reasons:
+        text += "\n  " + ", ".join(f"{r} {d:+d}" for r, d in reasons)
+    return text
 
 
 # ----------------------------------------------------------------------------- games
@@ -798,14 +884,24 @@ def injury_report(league: League, team: Team) -> str:
     rows = []
     for p in hurt:
         if p.id in team.injured_list:
-            status = "IL" if p.is_injured else "IL - healthy, ready to activate"
+            if not p.is_injured:
+                status = "IL - healthy, ready to activate"
+            elif injuries.can_rehab(team, p):
+                status = "IL - can start rehab"
+            else:
+                status = "IL"
+        elif p.rehab:
+            status = "Rehab assignment"
         elif p.id in team.active:
-            status = "Active (sits until healthy)"
+            status = "Active (sits until healthy)" if p.is_injured else f"Active - rusty ({p.rust_days}d)"
         else:
             status = "Minors"
-        rows.append([p.id, p.name, p.position, p.overall, p.injury or "-", p.injury_days or "-", status])
-    lines.append(table(["ID", "Name", "Pos", "OVR", "Injury", "Days", "Status"], rows, "rllrlrl"))
-    lines.append(f"Active roster {len(team.active)}/{roster.MAX_ACTIVE}; injured list {len(team.injured_list)}.")
+        rows.append([p.id, p.name, p.position, p.overall, p.injury or "-", p.injury_days or "-",
+                     injuries.durability(p, league.seed), status])
+    lines.append(table(["ID", "Name", "Pos", "OVR", "Injury", "Days", "Durability", "Status"], rows, "rllrlrll"))
+    lines.append(f"Active roster {len(team.active)}/{roster.MAX_ACTIVE}; injured list {len(team.injured_list)}. "
+                 f"Rehab assignments start {injuries.REHAB_WINDOW_DAYS} days before a return and avoid "
+                 "post-injury rust.")
     return "\n".join(lines)
 
 
@@ -910,3 +1006,119 @@ def franchise_history(league: League) -> str:
     if league.history:
         lines += ["", "League champions: " + ", ".join(f"{h['year']} {h['champion']}" for h in league.history)]
     return "\n".join(lines)
+
+
+# ----------------------------------------------------------------------------- careers & history
+
+
+def career_leaders_view(league: League, limit: int = 10, team: str | None = None,
+                        postseason: bool = False) -> str:
+    scope = f"{team} franchise" if team else "All-time"
+    kind = "postseason" if postseason else "career"
+    out = [f"{scope} {kind} leaders (active players and retired)"]
+    batting = ("hr", "h", "rbi", "sb", "avg", "ops") if not postseason else ("hr", "h", "rbi", "avg")
+    pitching = ("w", "so", "sv", "era") if not postseason else ("w", "so", "sv", "era")
+    any_rows = False
+    for stats, pitcher in ((batting, False), (pitching, True)):
+        for stat in stats:
+            rows = careers.career_leaders(league, stat, pitching=pitcher, limit=limit, team=team,
+                                          postseason=postseason)
+            if not rows:
+                continue
+            any_rows = True
+            label = (careers.PITCHING_STATS if pitcher else careers.BATTING_STATS)[stat][0]
+            fmt = (lambda v: f"{v:.2f}") if stat in ("era", "whip") else (
+                (lambda v: pct(v)) if stat in ("avg", "obp", "slg", "ops") else (lambda v: f"{v:.0f}"))
+            out.append("")
+            out.append(label + ":  " + "  ".join(
+                f"{i}. {person_label(league, person)} {fmt(v)}" for i, (person, v) in enumerate(rows[:5], 1)))
+    if not any_rows:
+        out.append("No statistics recorded yet.")
+    return "\n".join(out)
+
+
+def person_label(league: League, person: Player | RetiredPlayer | object) -> str:
+    if isinstance(person, RetiredPlayer):
+        return f"{person.name} (ret.)"
+    assert isinstance(person, Player)
+    return f"{person.name} ({person.team or 'FA'})"
+
+
+def records_view(league: League, team: str | None = None) -> str:
+    scope = f"{league.teams[team].full_name} franchise" if team else "League"
+    records = careers.season_records(league, team)
+    out = [f"{scope} single-season records (since {first_year(league)})"]
+    if not records:
+        out.append("No qualifying seasons yet.")
+        return "\n".join(out)
+    out.append(table(["Record", "Value", "Player", "Year"],
+                     [[r.label, r.value, r.holder, r.year] for r in records], "lrlr"))
+    out.append("Rate records need 502 PA or 162 IP in a season.")
+    return "\n".join(out)
+
+
+def first_year(league: League) -> int:
+    return league.history[0]["year"] if league.history else league.year
+
+
+def retired_view(league: League, limit: int = 30) -> str:
+    retired = careers.retired_list(league)
+    if not retired:
+        return "No players with MLB careers have retired yet."
+    rows = [[r.retired_year, r.name, r.position, r.age, r.last_team or "FA",
+             careers.seasons_played(r), careers.career_summary(r)] for r in retired[:limit]]
+    return ("Retired players (most recent first)\n"
+            + table(["Year", "Player", "Pos", "Age", "Last", "Yrs", "Career"], rows, "rllrlrl")
+            + f"\n{len(retired)} retired players on record.")
+
+
+def career_milestones_view(league: League, limit: int = 40) -> str:
+    if not league.career_milestones:
+        return "No career milestones yet (100 HR, 1,000 hits, 100 wins, 1,000 strikeouts, 100 saves, ...)."
+    return "Career milestones\n" + "\n".join(f"  * {m}" for m in league.career_milestones[-limit:])
+
+
+def postseason_history_view(league: League) -> str:
+    if not league.history:
+        return "No completed postseasons yet."
+    out = ["Postseason history"]
+    for h in reversed(league.history):
+        out.append("")
+        mvp = f"   WS MVP: {h['ws_mvp']}" if h.get("ws_mvp") else ""
+        out.append(f"{h['year']}: {h['champion']} def. {h['runner_up']}{mvp}")
+        for line in h.get("series", []):
+            if not line.startswith("World Series"):
+                out.append(f"    {line}")
+        for award in league.postseason_award_list(h["year"]):
+            if award["award"] != "World Series MVP":
+                out.append(f"    {award['award']}: {award['name']} ({award['team']}) - {award['line']}")
+    return "\n".join(out)
+
+
+def championships_view(league: League) -> str:
+    if not league.history:
+        return "No champions crowned yet."
+    counts: dict[str, int] = {}
+    for h in league.history:
+        counts[h["champion"]] = counts.get(h["champion"], 0) + 1
+    rows = [[h["year"], league.teams[h["champion"]].full_name, h["runner_up"],
+             h.get("ws_mvp") or "-"] for h in reversed(league.history)]
+    out = ["Championship history", table(["Year", "Champion", "Runner-up", "WS MVP"], rows, "rlll")]
+    ranking = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    out.append("Titles: " + ", ".join(f"{abbr} {n}" for abbr, n in ranking))
+    mine = counts.get(league.user_team, 0)
+    out.append(f"{league.user_team}: {mine} championship{'s' if mine != 1 else ''}.")
+    return "\n".join(out)
+
+
+def morale_view(league: League, team: Team) -> str:
+    rows = []
+    for pid in team.all_players:
+        p = league.players[pid]
+        reasons = [r for r, d in morale.factors(league, p) if d < 0]
+        rows.append((p.morale, [p.id, p.name, p.position, p.overall, p.morale, morale.label(p.morale),
+                                ", ".join(reasons[:2]) or "-"]))
+    rows.sort(key=lambda r: (r[0], r[1][0]))
+    return (f"{team.full_name} - clubhouse morale (lowest first)\n"
+            + table(["ID", "Name", "Pos", "OVR", "Mor", "Mood", "Concerns"], [r for _, r in rows[:20]],
+                    "rllrrll"))

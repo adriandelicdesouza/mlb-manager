@@ -42,13 +42,13 @@ From the franchise menu you can:
 | 3 | Lineup | Reorder the batting order, swap positions, start bench players, auto-build |
 | 4 | Pitching staff | Set the 5-man rotation and closer, see fatigue |
 | 5 | Roster moves | Swap an active player with a reserve (max 13 active pitchers) |
-| 6 | Player details | Full ratings card, defensive value at every position, stats |
+| 6 | Player details | Ratings, defensive value, season/postseason/career stats, awards, health, morale |
 | 7–11 | Standings, schedule, leaders, box score, bracket | Follow the league |
 | 12 | Simulate | 1 / 7 / 30 days, to end of regular season, or through the World Series; start the next season |
 | 13 | Save | Write a JSON save |
 | 14 | Front Office | Contracts & payroll, Trade Center, Free Agency, Draft, Minor League / Prospects, league transactions |
-| 15 | Injuries & injured list | Injury report; place injured players on the IL (frees an active spot) or activate them |
-| 16 | Season center | Milestones, awards (MVP, Cy Young, ROY, Gold Glove, Silver Slugger), season summary, franchise history |
+| 15 | Injuries & injured list | Injury report; IL placement/activation, rehab assignments, clubhouse morale |
+| 16 | Season center | Milestones, awards, season summary, franchise history, career leaderboards, franchise records, postseason leaders, retired players, career milestones, postseason and championship history |
 
 ### During the season
 
@@ -59,6 +59,17 @@ From the franchise menu you can:
   monthly; veterans may slip.
 - **Awards** are announced when the regular season ends; milestones (40-homer
   seasons, no-hitters, clinches...) appear in the news and the Season center.
+  The ALCS, NLCS and World Series each name an MVP.
+- **Careers** – every player's statistics are kept season by season and club
+  by club (they follow him through trades) and survive retirement. Postseason
+  statistics are tracked separately and never mixed with the regular season.
+- **Injury management** – some players are durable, some injury-prone, and a
+  recent serious injury raises the risk. About ten days before an IL player
+  returns you can send him on a rehab assignment in the minors; players
+  activated straight off the IL after a long injury are rusty for a few days.
+- **Morale** – players react to playing time, their role, their contract and
+  how the team is doing. Very happy players perform slightly better and give a
+  hometown discount; unhappy ones slump a little and may refuse to re-sign.
 
 ### Front office
 

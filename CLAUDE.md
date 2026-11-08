@@ -35,7 +35,9 @@ presentation layer.
 | `frontoffice.py` | Club strategy, player/pick valuation, best-26 org management, init/migration |
 | `trades.py` | Trade proposals, validation, evaluation, counters, CPU offers and CPU-CPU trades |
 | `freeagency.py` | Free-agent market, offers, CPU signings |
-| `injuries.py` | Injury rolls, IL moves, game-day substitutions (never mutate the saved lineup) |
+| `injuries.py` | Injury rolls, durability traits, injury history, IL moves, rehab assignments, rust, game-day substitutions (never mutate the saved lineup) |
+| `careers.py` | Career/postseason stats (per-club stints, archived history), leaderboards, franchise records, series MVPs |
+| `morale.py` | Deterministic morale: explainable factors, weekly drift, modest game/contract effects |
 | `awards.py` | End-of-season award formulas |
 | `seasonlog.py` | Milestone detection (stats, no-hitters, clinches, streaks) |
 | `league.py` | `League` aggregate: day advancement, phases (regular → postseason → complete → resign → draft → free_agency), results, leaders |
@@ -61,6 +63,13 @@ presentation layer.
 - Injured players must never reach `simulate_game`: always pass the team through
   `injuries.game_day_team()`; roster lists are active / reserves / injured_list
   and must be mutated via `Team.remove_player()` so no list is missed.
+- When a player leaves a club call `league.note_departure(player)` *before*
+  changing `player.team` (closes his stat stint, resets morale).
+- `Player.batting/pitching` are the current regular season only; postseason
+  lines live in `post_batting/post_pitching` (by round). Never merge them.
+  Use `careers.*` helpers for career totals (they add the live season once).
+- Game-day form (morale, rust) is applied through `League.game_players()`
+  (adjusted copies); never mutate stored ratings for temporary effects.
 - `scripts/league_health.py [seasons] [seed]` checks long-run balance
   (talent drift, payrolls, population, roster validity). Run it after
   touching development, contracts or CPU behaviour.

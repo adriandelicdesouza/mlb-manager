@@ -74,15 +74,43 @@ financial realism.
 - [x] End-of-season summary, awards browser and franchise history (seasons, titles, awards, major moves)
 - [x] Save format v3 with automatic v2→v3 (and v1→v3) migration
 
-## Milestone 4 – Depth (next)
-- [ ] Separate postseason and career statistics; Hall of Fame
-- [ ] Player morale / contract-year effects; no-trade clauses
+## Milestone 4 – Player careers & franchise depth ✅ v0.4.0
+- [x] Career statistics (batting: G, AB, H, HR, RBI, R, BB, SO, SB, AVG/OBP/SLG/OPS;
+      pitching: G, GS, IP, W, L, SV, SO, BB, ER, ERA, WHIP), per season and per club
+- [x] Stats follow players through trades/releases (season split into club stints)
+- [x] Separate postseason statistics per round; career postseason and World Series totals
+- [x] Postseason awards: ALCS/NLCS MVP and World Series MVP
+- [x] Retired players keep their career records (permanent archive)
+- [x] Career milestones (100+ HR, 1,000+ H/SO, 100+ W/SV, ...)
+- [x] Injury-prone / durable tendencies, injury history, rehab assignments, post-injury rust
+- [x] Lightweight deterministic morale (playing time, role, contract, team results, streaks)
+      with modest effects on performance and re-signing
+- [x] Season Center: career leaderboards, franchise records & leaders, postseason leaders,
+      retired players, career milestones, postseason and championship history
+- [x] Save format v4 with automatic v3→v4 migration
+
+## Milestone 5 – Trade intelligence (v0.5.0, next)
+- [ ] Centralised trade valuation (ability, potential, age, productive years, position
+      scarcity, performance, contract, development, replacement level, injuries)
+- [ ] Team-specific needs: positional depth, competitive window, payroll, pick inventory
+- [ ] Per-side fairness breakdown; acceptable / borderline / unacceptable with configurable tolerances
+- [ ] Proportional counteroffers sized to the actual shortfall; refuse hopeless offers
+- [ ] Need-driven CPU trades (contender buys, rebuilder sells, bullpen help, prospect surplus)
+- [ ] Anti-exploit safeguards (quantity-for-quality, salary dumps, expiring deals, depth
+      stripping, repeated offers, nonsensical CPU-CPU deals)
+
+## Milestone 6 – Interactive terminal GUI (v0.6.0)
+- [ ] Textual-based app (mouse + keyboard) on top of the existing `League` API; classic CLI kept
+- [ ] Dashboard, roster table + player profile, lineup editing, promote/demote/release
+- [ ] Trade center, draft room, Season Center screens, compact game view (play-by-play replay)
+
+## Later
+- [ ] Hall of Fame; no-trade clauses
 - [ ] Optional luxury tax (soft cap) as an alternative cap mode
 - [ ] Trade block and "what would it take?" asking-price feature
-- [ ] Rehab assignments and injury-prone traits
 - [ ] Tighter schedule packing (≈186 days), higher stolen-base volume
 
-## Milestone 5 – In-game management
+## Milestone 7 – In-game management
 - [ ] Play-by-play mode for the user's games
 - [ ] Manual pitching changes, pinch hitters, steals, bunts, intentional walks
 

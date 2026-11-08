@@ -1,8 +1,17 @@
 # Project State
 
-_Last updated: 2026-11-08 · Version 0.3.0 (in-season management)_
+_Last updated: 2026-11-08 · Version 0.4.0 (player careers & franchise depth)_
 
 ## Status
+**v0.4.0 adds player careers and franchise depth**: career statistics that
+follow players through trades and survive retirement, separate postseason
+statistics (per round, career and World Series totals) with LCS/WS MVPs,
+injury tendencies, injury history, rehab assignments and post-injury rust, a
+lightweight deterministic morale system, and an expanded Season Center
+(career leaderboards, franchise records, retired players, career milestones,
+postseason and championship history).
+
+### v0.3.0 recap
 **v0.3.0 adds in-season management** on top of the GM layer: injuries and an
 injured list, in-season development, end-of-season awards, season milestones,
 season summaries and a franchise history. Smarter CPU roster management keeps
@@ -31,6 +40,22 @@ league system. All 30 clubs participate in every system.
 | Awards | `awards.py` | Value formulas from stats: MVP, Cy Young, ROY (service 0), Gold Glove (≥81 games at position; P), Silver Slugger (main position) |
 | Milestones | `seasonlog.py` | 30/40/50/60 HR, 100/125/150 RBI, 200 H, 40/60 SB, 15/20 W, 200/250/300 K, 40/50 SV, no-hitters, clinches, eliminations, 10-game streaks |
 | UI | `cli.py`, `views.py`, `main.py` | Franchise menu item 14 "Front Office": Contracts & Payroll, Trade Center, Free Agency, Draft, Minor League / Prospects, Transactions; offseason steps under SIMULATE; `--salary-cap` |
+
+## Verified results (v0.4.0)
+- **Test suite: `Ran 212 tests in ~124s — OK`**. New: `test_careers.py` (14: derived
+  stats incl. zero AB/IP, stints across trades, archive idempotence, regular vs
+  postseason separation checked against schedule/series runs, WS ⊂ postseason,
+  series MVPs, multi-season persistence incl. retirement and save/load, v3→v4
+  migration, Season Center/Injuries CLI), `test_morale_injuries.py` (12:
+  durability distribution and risk, injury history, rust vs rehab, CPU rehab
+  with valid rosters, morale factors/determinism/bounds/effects).
+- `scripts/league_health.py 6 11`: active OVR 53.3 → 55.5 and R/G 4.09–4.24
+  (unchanged from v0.3.0), every roster valid; ~300–320 injuries per season,
+  CPU IL placements 142 per season (v0.3.0: 143), ~90 rehab assignments;
+  mean morale 51 with no club in revolt; save size ~1.6 MB growing ~0.2 MB/season.
+- A real v3 save (`tor_2028`, offseason) loads, migrates to v4 and plays on.
+- Headless season ≈ 6.2 s (v0.3.0: 5.8 s); an O(n²) roster-selection scan was
+  replaced by id sets to absorb the extra bookkeeping.
 
 ## Verified results (v0.3.0)
 - **Test suite: `Ran 186 tests in ~85s — OK`** (`.venv/bin/python -m unittest discover -s tests`).
@@ -67,8 +92,12 @@ league system. All 30 clubs participate in every system.
 - `mlb-manager --simulate-season --seed 7` still completes in ~4 s.
 
 ## Known limitations
-- No morale, no-trade clauses, career/postseason statistics or Hall of Fame.
-- Injured players simply sit; there are no rehab assignments or injury-prone traits.
+- Career statistics start with the league's first season (generated veterans
+  have no synthetic past); no Hall of Fame or no-trade clauses.
+- Saves made mid-postseason with v0.3.0 have no per-round stats for games
+  already played (v3→v4 migration).
+- Mid-season transactions credit a player's games to the club he was with when
+  they were played; the lineup "games by position" is still per season.
 - Milestones list is capped at 250 per season; news feed shows the latest 60 items.
 - Luxury tax not implemented (hard cap only; re-signing exception).
 - User contract negotiation is take-it-or-leave-it for re-signings; free-agent

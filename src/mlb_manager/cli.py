@@ -828,10 +828,15 @@ class App:
             choice = self.menu("Injuries & injured list", [
                 ("1", "Place an injured player on the IL (frees an active spot)"),
                 ("2", "Activate a healthy player from the IL"),
+                ("3", "Start a rehab assignment (IL player close to returning)"),
+                ("4", "Clubhouse morale"),
                 ("0", "Back"),
             ])
             if choice == "0":
                 return
+            if choice == "4":
+                self.say(views.morale_view(lg, team))
+                continue
             pid = self.ask_int("Player ID (Enter to cancel): ", 1)
             if pid is None or pid not in lg.players:
                 continue
@@ -839,6 +844,8 @@ class App:
                 if choice == "1":
                     for note in lg.place_on_il(team, pid):
                         self.say(f"  - {note}")
+                elif choice == "3":
+                    self.say(lg.start_rehab(team, pid))
                 else:
                     self.say(lg.activate_from_il(team, pid))
                     if pid in team.reserves:
@@ -855,6 +862,13 @@ class App:
                 ("2", "Awards"),
                 ("3", "Season summary"),
                 ("4", "Franchise history"),
+                ("5", "Career leaderboards (all-time)"),
+                ("6", "Franchise records & franchise career leaders"),
+                ("7", "Postseason leaders (career)"),
+                ("8", "Retired players"),
+                ("9", "Career milestones"),
+                ("10", "Postseason history"),
+                ("11", "Championship history"),
                 ("0", "Back"),
             ])
             if choice == "0":
@@ -869,8 +883,28 @@ class App:
                 self.say(views.awards_view(lg, year if year is not None else (years[-1] if years else None)))
             elif choice == "3":
                 self.say(views.season_summary(lg))
-            else:
+            elif choice == "4":
                 self.say(views.franchise_history(lg))
+            elif choice == "5":
+                self.say(views.career_leaders_view(lg))
+            elif choice == "6":
+                raw = self.ask(f"Club abbreviation [{lg.user_team}]: ").upper() or lg.user_team
+                if raw not in lg.teams:
+                    self.say("Unknown club.")
+                    continue
+                self.say(views.records_view(lg, raw))
+                self.say("")
+                self.say(views.career_leaders_view(lg, team=raw))
+            elif choice == "7":
+                self.say(views.career_leaders_view(lg, postseason=True))
+            elif choice == "8":
+                self.say(views.retired_view(lg))
+            elif choice == "9":
+                self.say(views.career_milestones_view(lg))
+            elif choice == "10":
+                self.say(views.postseason_history_view(lg))
+            else:
+                self.say(views.championships_view(lg))
 
     # ------------------------------------------------------------------ saving
 
