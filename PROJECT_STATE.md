@@ -1,8 +1,14 @@
 # Project State
 
-_Last updated: 2026-11-08 · Version 0.2.0 (GM expansion)_
+_Last updated: 2026-11-08 · Version 0.3.0 (in-season management)_
 
 ## Status
+**v0.3.0 adds in-season management** on top of the GM layer: injuries and an
+injured list, in-season development, end-of-season awards, season milestones,
+season summaries and a franchise history. Smarter CPU roster management keeps
+every active roster valid and healthy enough to play.
+
+### v0.2.0 recap
 **Playable multi-season franchise game with a GM layer.** On top of the v0.1
 MVP (simulation, schedule, playoffs, saves), managers now run a front office:
 contracts and a salary cap, trades (players and picks) with a strategy-driven
@@ -21,9 +27,30 @@ league system. All 30 clubs participate in every system.
 | Free agency | `freeagency.py` | Asking prices (cheaper in-season), negotiation band, user signings, CPU signing rounds |
 | League flow | `league.py` | Weekly CPU front-office activity in season; offseason phases resign → draft → free agency → new season |
 | Saves | `persistence.py` | Format v2; v1 saves migrated automatically and deterministically |
+| Injuries | `injuries.py` | Seeded risk per appearance (age, pitch count), 4 severities, IL place/activate, game-day substitution, healthy counts |
+| Awards | `awards.py` | Value formulas from stats: MVP, Cy Young, ROY (service 0), Gold Glove (≥81 games at position; P), Silver Slugger (main position) |
+| Milestones | `seasonlog.py` | 30/40/50/60 HR, 100/125/150 RBI, 200 H, 40/60 SB, 15/20 W, 200/250/300 K, 40/50 SV, no-hitters, clinches, eliminations, 10-game streaks |
 | UI | `cli.py`, `views.py`, `main.py` | Franchise menu item 14 "Front Office": Contracts & Payroll, Trade Center, Free Agency, Draft, Minor League / Prospects, Transactions; offseason steps under SIMULATE; `--salary-cap` |
 
-## Verified results
+## Verified results (v0.3.0)
+- **Test suite: `Ran 186 tests in ~85s — OK`** (`.venv/bin/python -m unittest discover -s tests`).
+  New: `test_injuries.py` (15), `test_season_experience.py` (21), in-season CLI tests (2).
+  Covered: seeded injuries and severity mix, injured players never play (90-day
+  check), CPU IL usage and roster validity every day, user IL flow with call-up,
+  forced IL when healthy depth is short, offseason healing, traded injured
+  players land on the IL, award eligibility/correctness, milestones, in-season
+  development caps and playing-time effect, performance-aware lineups and
+  rotations, CPU promotions, v2→v3 migration, franchise log, Season Center and
+  Injuries menus.
+- Real console session: injuries reported in news, injured starter auto-replaced,
+  injury report and IL screens, milestones (10-game streak, combined no-hitters),
+  full season → awards announced → season summary → franchise history.
+- Over 3 seeded seasons: 2–4 no-hitters per season, ~135–147 CPU IL placements.
+- `scripts/league_health.py 6 11`: active OVR 53.3 → 55.5 (≈+0.4/yr, same slope
+  as v0.2), R/G 4.09–4.18, every roster valid every season.
+- Headless season: ~5.8 s (was ~4 s; injuries, CPU roster reviews, milestones).
+
+## Verified results (v0.2.0)
 - **Test suite: `Ran 148 tests in ~54s — OK`** (`.venv/bin/python -m unittest discover -s tests`).
   New coverage: contracts, development, draft, trades (incl. exploit cases),
   free agency, front office, user-driven offseason, 3-season progression,
@@ -40,11 +67,12 @@ league system. All 30 clubs participate in every system.
 - `mlb-manager --simulate-season --seed 7` still completes in ~4 s.
 
 ## Known limitations
-- No injuries, awards, morale or no-trade clauses.
+- No morale, no-trade clauses, career/postseason statistics or Hall of Fame.
+- Injured players simply sit; there are no rehab assignments or injury-prone traits.
+- Milestones list is capped at 250 per season; news feed shows the latest 60 items.
 - Luxury tax not implemented (hard cap only; re-signing exception).
 - User contract negotiation is take-it-or-leave-it for re-signings; free-agent
   offers allow 85–100 % of the ask with a deterministic chance.
-- In-season development does not occur (ratings change each offseason).
 - Average active age drifts down slightly over many seasons.
 - Earlier MVP limitations still apply (≈216-day schedule, ER simplification,
   low stolen-base volume, no in-game decisions).

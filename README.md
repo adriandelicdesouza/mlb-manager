@@ -47,6 +47,18 @@ From the franchise menu you can:
 | 12 | Simulate | 1 / 7 / 30 days, to end of regular season, or through the World Series; start the next season |
 | 13 | Save | Write a JSON save |
 | 14 | Front Office | Contracts & payroll, Trade Center, Free Agency, Draft, Minor League / Prospects, league transactions |
+| 15 | Injuries & injured list | Injury report; place injured players on the IL (frees an active spot) or activate them |
+| 16 | Season center | Milestones, awards (MVP, Cy Young, ROY, Gold Glove, Silver Slugger), season summary, franchise history |
+
+### During the season
+
+- **Injuries** happen in games. An injured starter sits automatically and the
+  best healthy bench player takes his spot until he returns. Put longer
+  injuries on the IL to call up a replacement; activate players once healthy.
+- **Development** continues all year: young players with playing time improve
+  monthly; veterans may slip.
+- **Awards** are announced when the regular season ends; milestones (40-homer
+  seasons, no-hitters, clinches...) appear in the news and the Season center.
 
 ### Front office
 

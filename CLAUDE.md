@@ -35,6 +35,9 @@ presentation layer.
 | `frontoffice.py` | Club strategy, player/pick valuation, best-26 org management, init/migration |
 | `trades.py` | Trade proposals, validation, evaluation, counters, CPU offers and CPU-CPU trades |
 | `freeagency.py` | Free-agent market, offers, CPU signings |
+| `injuries.py` | Injury rolls, IL moves, game-day substitutions (never mutate the saved lineup) |
+| `awards.py` | End-of-season award formulas |
+| `seasonlog.py` | Milestone detection (stats, no-hitters, clinches, streaks) |
 | `league.py` | `League` aggregate: day advancement, phases (regular → postseason → complete → resign → draft → free_agency), results, leaders |
 | `persistence.py` | Versioned JSON save/load (atomic writes) |
 | `views.py` | Pure text rendering (tables, box scores, standings, cards) |
@@ -55,6 +58,9 @@ presentation layer.
   trades, re-signing priorities and cut-downs; tune it rather than adding ad
   hoc checks.
 - Keep CPU decisions deterministic: use `league._rng(<purpose>, ...)`.
+- Injured players must never reach `simulate_game`: always pass the team through
+  `injuries.game_day_team()`; roster lists are active / reserves / injured_list
+  and must be mutated via `Team.remove_player()` so no list is missed.
 - `scripts/league_health.py [seasons] [seed]` checks long-run balance
   (talent drift, payrolls, population, roster validity). Run it after
   touching development, contracts or CPU behaviour.
@@ -65,7 +71,7 @@ presentation layer.
 - `tests/helpers.league_at_offseason()` skips straight to a completed season
   for fast offseason tests; replay steps on a twin league to learn the
   deterministic ids a CLI script needs.
-- Full-season tests take a few seconds each; the whole suite runs in ~55 s.
+- Full-season tests take ~6 s each; the whole suite runs in ~85 s.
 - Sim calibration targets (MLB-like): ~4.2–4.5 R/G, ~1.1 HR/G, ~.245 AVG.
   Re-check with `--simulate-season` after touching `game.py` constants.
 

@@ -60,19 +60,33 @@ financial realism.
 
 **Technical**: save format v2 with automatic v1 migration; deterministic seeds preserved.
 
-## Milestone 3 – Depth (next)
-- [ ] Injuries and injured list, with CPU call-ups
-- [ ] Separate postseason and career statistics; awards (MVP, Cy Young, ROY)
+## Milestone 3 – In-season management ✅ v0.3.0
+- [x] Injuries: seeded per-game risk (age, workload), four severities (1–130 days), named injuries
+- [x] Injured players never take the field: game-day substitutes keep the saved lineup intact
+- [x] Injured list: user placement/activation; IL frees an active spot; automatic call-ups
+- [x] CPU clubs IL long injuries, call up replacements and reinstate healed players daily
+- [x] Healthy-depth guarantee (≥10 healthy hitters and pitchers active) for every club
+- [x] In-season development every 30 days, scaled by age, potential and playing time (capped)
+- [x] Offseason development preserved (rates rebalanced for the in-season growth)
+- [x] Biweekly CPU roster reviews: promotions/demotions, performance-aware lineups and rotations
+- [x] Awards per league: MVP, Cy Young, Rookie of the Year, Gold Gloves (8 + P), Silver Sluggers (9)
+- [x] Season milestones: statistical thresholds, no-hitters, division clinches, eliminations, 10-game streaks
+- [x] End-of-season summary, awards browser and franchise history (seasons, titles, awards, major moves)
+- [x] Save format v3 with automatic v2→v3 (and v1→v3) migration
+
+## Milestone 4 – Depth (next)
+- [ ] Separate postseason and career statistics; Hall of Fame
 - [ ] Player morale / contract-year effects; no-trade clauses
 - [ ] Optional luxury tax (soft cap) as an alternative cap mode
 - [ ] Trade block and "what would it take?" asking-price feature
+- [ ] Rehab assignments and injury-prone traits
 - [ ] Tighter schedule packing (≈186 days), higher stolen-base volume
 
-## Milestone 4 – In-game management
+## Milestone 5 – In-game management
 - [ ] Play-by-play mode for the user's games
 - [ ] Manual pitching changes, pinch hitters, steals, bunts, intentional walks
 
 ## Technical backlog
 - [ ] Optional type checking (mypy) and linting configuration
-- [ ] Further sim performance work (~4 s per season today)
+- [ ] Further sim performance work (~5.8 s per season today)
 - [ ] League gets slightly younger over many seasons (avg active age 28 → ~27 after 6 years); revisit aging curve
