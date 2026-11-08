@@ -209,6 +209,56 @@ ModalScreen {
 TitleScreen {
     align: center middle;
 }
+LeagueSetupScreen, LoadReviewScreen, RulesEditScreen {
+    align: center middle;
+}
+#setup-box {
+    width: 110;
+    max-width: 100%;
+    height: 100%;
+    border: round #2f363d;
+    padding: 1 2;
+    background: #14181b;
+}
+.form-row {
+    height: auto;
+}
+RulesForm, #rf-soft {
+    height: auto;
+}
+.form-label {
+    width: 24;
+    padding: 1 1 0 0;
+    color: #9aa3ac;
+}
+.form-label-short {
+    width: 16;
+    padding: 1 1 0 1;
+    color: #9aa3ac;
+}
+.form-toggle {
+    width: 30;
+}
+.form-check {
+    margin: 0 0 0 24;
+}
+Input.money {
+    width: 26;
+}
+.form-errors {
+    color: #e3a0a0;
+    height: auto;
+}
+#setup-scroll {
+    height: 1fr;
+}
+.setup-actions {
+    height: 1;
+    margin: 1 0 0 0;
+}
+#setup-summary, #edit-impact, #review-rules {
+    margin: 1 0 0 0;
+}
 #dug-top {
     height: auto;
 }

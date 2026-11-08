@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from contextlib import redirect_stdout
 from pathlib import Path
 
+from mlb_manager import finance
 from mlb_manager.cli import App
 from mlb_manager.league import League
 from mlb_manager.main import main, simulate_season
@@ -50,6 +51,7 @@ class CliTests(unittest.TestCase):
     def test_new_franchise_browse_sim_and_save(self) -> None:
         answers = [
             "1", "xyz", "bos", "99",      # new franchise: bad abbr, then BOS, seed 99
+            "1",                           # league setup: start with standard MLB rules
             "1",                           # dashboard
             "2",                           # roster
             "3", "1", "1", "9", "4", "0",  # lineup: swap 1<->9, auto, back
@@ -85,7 +87,7 @@ class CliTests(unittest.TestCase):
         team = league.user
         out_id = team.lineup[0].player_id
         in_id = next(pid for pid in team.reserves if not league.players[pid].is_pitcher)
-        answers = ["2", "1", "5", str(out_id), str(in_id), "12", "1"]  # then EOF
+        answers = ["2", "1", "1", "5", str(out_id), str(in_id), "12", "1"]  # load, review: continue; then EOF
         io_ = self.run_app(answers)
         text = io_.text
         self.assertIn("Loaded sea.json", text)
@@ -135,6 +137,63 @@ class MainTests(unittest.TestCase):
         with unittest.mock.patch("sys.stderr", new_callable=io.StringIO) as err:
             self.assertEqual(main(["--load", "/nonexistent/x.json"]), 1)
         self.assertIn("not found", err.getvalue())
+
+
+class CliFinanceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_new_league_setup_with_custom_rules(self) -> None:
+        answers = [
+            "1", "bos", "5",            # new franchise: BOS, seed 5
+            "3",                        # setup: customise financial rules
+            "1", "3", "abc", "180",     # cap type: hard cap, invalid amount then $180M
+            "2", "y", "100", "",        # salary floor $100M, default shortfall charge
+            "8",                        # done
+            "4", "2024",                # starting season 2024
+            "1",                        # start
+        ]
+        io_ = ScriptedIO(answers)
+        app = App(io_.input, io_.output, save_dir=self.dir)
+        app.run()
+        text = io_.text
+        self.assertIn("League setup", text)
+        self.assertIn("Standard MLB rules", text)
+        self.assertIn("unlimited payroll", text)
+        self.assertIn("is not an amount", text)
+        lg = app.league
+        self.assertEqual(lg.year, 2024)
+        r = finance.rules(lg)
+        self.assertEqual((r.cap_type, r.cap_amount, r.floor_enabled, r.floor_amount),
+                         (finance.CAP_HARD, 180.0, True, 100.0))
+
+    def test_load_review_and_edit_rules(self) -> None:
+        league = League.create(seed=9, user_team="PIT")
+        path = save_league(league, self.dir / "pit.json")
+        answers = [
+            "2", "1",                   # load the first save
+            "2", "2",                   # review: edit rules -> custom
+            "1", "3", "150", "8",       # hard cap $150M, done
+            "y",                        # apply
+            "1",                        # continue
+            "14", "7",                  # front office -> league finances
+        ]
+        io_ = ScriptedIO(answers)
+        app = App(io_.input, io_.output, save_dir=self.dir)
+        app.run()
+        text = io_.text
+        self.assertIn("Current financial rules", text)
+        self.assertIn("What changes", text)
+        self.assertIn("preserved", text)
+        self.assertIn("Club payrolls", text)
+        self.assertTrue(finance.rules(app.league).hard_cap)
+        self.assertFalse(finance.rules(load_league(path)).has_cap)  # the save file is untouched
+        auto = load_league(self.dir / "autosave_pit_2026.json")
+        self.assertEqual(finance.rules(auto).cap_amount, 150.0)
 
 
 class CliDugoutTests(unittest.TestCase):

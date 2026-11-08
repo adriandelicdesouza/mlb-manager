@@ -12,7 +12,7 @@ from mlb_manager import ratings as rt
 from mlb_manager import roster
 from mlb_manager.franchises import DIVISIONS, FRANCHISES, LEAGUE_NAMES, LEAGUES
 from mlb_manager.game import GameResult, TeamBox
-from mlb_manager import careers, contracts, development, freeagency, frontoffice, injuries, morale, trades
+from mlb_manager import careers, contracts, development, finance, freeagency, frontoffice, injuries, morale, trades
 from mlb_manager.draft import DraftPick
 from mlb_manager.league import (
     PHASE_COMPLETE,
@@ -622,15 +622,11 @@ def dashboard(league: League) -> str:
         out.append(f"{h['year']} champion: {h['champion']}. {team.abbr}: {h['user_result']}.")
     if league.in_offseason:
         out.append(f"Offseason phase: {PHASE_LABELS[league.phase]}  (continue via SIMULATE)")
-    space = contracts.cap_space(team, league.players, league.salary_cap)
     hurt = league.injured_players(team)
     if hurt:
         out.append(f"Injuries: {len(hurt)} ({len(team.injured_list)} on the IL) - see Injuries (15)")
-    out.append(
-        f"Payroll {contracts.money(contracts.payroll(team, league.players))} / cap "
-        f"{contracts.money(league.salary_cap)} (space {contracts.money(space)})   "
-        f"Strategy: {team.strategy}   Trade offers: {len(league.trade_offers)}"
-    )
+    out.append(f"{payroll_status(league, team)}   Strategy: {team.strategy}   "
+               f"Trade offers: {len(league.trade_offers)}")
     out.append("")
     out.append(lineup_compact(league, team))
     out.append("")
@@ -687,18 +683,48 @@ def org_table(league: League, members: Sequence[Player], show_role: Team | None 
                  rows, "rllrrrrrll")
 
 
+def cap_text(league: League, team: Team) -> str:
+    """``No salary cap`` or ``Hard cap $200M (room $12.5M)`` / ``... OVER by ...``."""
+    r = finance.rules(league)
+    room = finance.cap_room(league, team)
+    if room is None:
+        return "No salary cap"
+    kind = "Hard cap" if r.hard_cap else "Soft cap"
+    state = f"room {fmt(room)}" if room >= 0 else f"OVER by {fmt(-room)}"
+    return f"{kind} {fmt(r.cap_amount)} ({state})"
+
+
+def fmt(value: float | None) -> str:
+    return finance.format_amount(value)
+
+
+def payroll_status(league: League, team: Team) -> str:
+    """One line: payroll, cap, floor and CBT position for ``team``."""
+    r = finance.rules(league)
+    parts = [f"Payroll {fmt(finance.payroll(league, team))}", cap_text(league, team)]
+    if r.has_floor:
+        short = finance.below_floor(league, team)
+        parts.append(f"Floor {fmt(r.floor_amount)}" + (f" (short {fmt(short)})" if short else ""))
+    if r.cbt_enabled:
+        bill = finance.projected_tax(league, team)
+        parts.append(f"CBT payroll {fmt(bill.cbt_payroll)} / {fmt(r.cbt_threshold)}"
+                     + (f" (proj. tax {fmt(bill.total)})" if bill.total else ""))
+    else:
+        parts.append("No CBT")
+    return "  |  ".join(parts)
+
+
 def front_office_overview(league: League) -> str:
     team = league.user
     players = league.players
-    space = contracts.cap_space(team, players, league.salary_cap)
     open_, reason = trades.trade_window(league)
     picks = [p for p in league.draft_picks if p.owner == team.abbr]
     lines = [
         f"FRONT OFFICE - {team.full_name}",
         f"Phase: {phase_label(league)}   Club strategy (league view): {team.strategy}",
-        f"Payroll: {contracts.money(contracts.payroll(team, players))}   "
-        f"Cap: {contracts.money(league.salary_cap)}   Space: {contracts.money(space)}"
-        + ("   ** OVER THE CAP **" if space < 0 else ""),
+        payroll_status(league, team),
+        f"Owners' payroll budget (payroll + taxes): {fmt(finance.payroll_budget(league, team))}   "
+        f"Rules: {finance.rules(league).source} ({finance.rules(league).agreement})",
         f"Organisation: {len(team.all_players)}/{frontoffice.MAX_ORG} players "
         f"({len(team.active)} active, {len(team.reserves)} minor league)",
         f"Trading: {reason}" + ("" if open_ else " (closed)"),
@@ -714,12 +740,11 @@ def payroll_view(league: League, team: Team) -> str:
     years = [str(league.year + i + (0 if league.in_season or league.is_complete else 1)) for i in range(4)]
     lines = [
         f"{team.full_name} - contracts & payroll",
-        f"Payroll {contracts.money(contracts.payroll(team, players))}  |  Cap "
-        f"{contracts.money(league.salary_cap)}  |  Space "
-        f"{contracts.money(contracts.cap_space(team, players, league.salary_cap))}  |  Dead money "
-        f"{contracts.money(team.dead_money)}",
+        payroll_status(league, team),
+        f"Dead money {fmt(team.dead_money)}  |  Contract AAV total {fmt(finance.aav_payroll(league, team))}  |  "
+        f"Owners' budget {fmt(finance.payroll_budget(league, team))}",
         "",
-        "Future commitments",
+        "Future commitments (cash)",
         table(years, [[contracts.money(c) for c in commits]], "rrrr"),
         "",
         org_table(league, members, team),
@@ -773,13 +798,20 @@ def proposal_view(league: League, prop: trades.TradeProposal) -> str:
 def contract_impact_view(league: League, prop: trades.TradeProposal) -> str:
     """Payroll consequences for both clubs (public information)."""
     rows = []
-    for impact in trades.contract_impact(league, prop):
+    notes: list[str] = []
+    impacts = trades.contract_impact(league, prop)
+    for impact in impacts:
         future = " / ".join(f"{v:+.2f}" for v in impact.future_change)
+        room = "no cap" if impact.cap_space_after is None else fmt(impact.cap_space_after)
+        tax = (f"{fmt(impact.tax_before)} -> {fmt(impact.tax_after)}" if finance.rules(league).cbt_enabled
+               else "no CBT")
         rows.append([impact.team, contracts.money(impact.payroll_before), contracts.money(impact.payroll_after),
-                     f"{impact.change:+.2f}", contracts.money(impact.cap_space_after), future,
-                     f"{impact.years_in} in / {impact.years_out} out"])
-    return "Contract implications\n" + table(
-        ["Club", "Payroll now", "After", "Change", "Cap space", "Next 3 yrs ($M)", "Contract yrs"], rows, "lrrrrrl")
+                     f"{impact.change:+.2f}", room, tax, future, f"{impact.years_in} in / {impact.years_out} out"])
+        notes.extend(f"  {impact.team}: {m}" for m in impact.messages)
+    text = "Contract implications\n" + table(
+        ["Club", "Payroll now", "After", "Change", "Cap room after", "Proj. CBT tax", "Next 3 yrs ($M)",
+         "Contract yrs"], rows, "lrrrrrrl")
+    return text + ("\n" + "\n".join(notes) if notes else "")
 
 
 def offers_view(league: League) -> str:
@@ -804,9 +836,8 @@ def free_agents_view(league: League, position: str | None = None, limit: int = 2
         rows.append([p.id, p.name, p.position, p.age, p.overall,
                      development.scouted_potential(p, league.user_team, league.seed, league.year),
                      contracts.money(salary), years])
-    space = contracts.cap_space(league.user, league.players, league.salary_cap)
     header = (f"Free agents ({len(pool)} available{' at ' + position if position else ''})  |  "
-              f"Your cap space {contracts.money(space)}  |  Org "
+              f"{cap_text(league, league.user)}  |  Org "
               f"{len(league.user.all_players)}/{frontoffice.MAX_ORG}")
     if not rows:
         return header + "\nNo free agents match."
@@ -1518,3 +1549,87 @@ def manager_report(report: Mapping[str, object] | None) -> str:
             out.append(f"  {'T' if d['top'] else 'B'}{d['inning']} {d['outs']} out  {d['text']} ({d['source']})"
                        + (f" [{a.get('grade')}] {a.get('basis')}" if a else ""))
     return "\n".join(out)
+
+
+# ----------------------------------------------------------------------------- financial rules
+
+
+def rules_rows(r: finance.FinancialRules) -> list[tuple[str, str]]:
+    """``(label, value)`` rows describing a rule set (shared by CLI and GUI)."""
+    if r.cap_type == finance.CAP_NONE:
+        cap = "None - unlimited payroll"
+    elif r.hard_cap:
+        cap = f"Hard cap {fmt(r.cap_amount)} - no move may take payroll above it"
+    else:
+        exc = ", ".join(finance.SOFT_CAP_EXCEPTIONS[e].lower() for e in r.soft_cap_exceptions) or "none"
+        cap = (f"Soft cap {fmt(r.cap_amount)} - exceeding it only through exceptions ({exc}); penalty "
+               f"{finance.format_rate(r.soft_cap_tax_rate)} of the season payroll above it")
+    floor = (f"{fmt(r.floor_amount)} - shortfall charged at {finance.format_rate(r.floor_penalty_rate)}"
+             if r.has_floor else "None")
+    if r.cbt_enabled:
+        rates = " / ".join(finance.format_rate(x) for x in r.cbt_rates)
+        surcharges = ", ".join(
+            f"+{finance.format_rate(t.rate)}"
+            + (f" (repeat {finance.format_rate(t.repeat_rate)})" if t.repeat_rate != t.rate else "")
+            + f" over {fmt(r.cbt_threshold + t.over)}" for t in r.cbt_surcharges) or "none"
+        cbt = (f"Threshold {fmt(r.cbt_threshold)}; {rates} for the 1st / 2nd / 3rd+ consecutive season over "
+               f"(resets after a season under); surcharges {surcharges}")
+        if r.cbt_draft_penalty_over > 0:
+            cbt += f"; {fmt(r.cbt_draft_penalty_over)}+ over moves the top draft pick back 10 places"
+        measure = f"Contract AAV, prorated by days on the roster, plus {fmt(r.player_benefits)} player benefits"
+    else:
+        cbt, measure = "Disabled", "-"
+    sharing = (f"{finance.format_rate(r.revenue_sharing_rate)} of local revenue pooled and split equally"
+               if r.revenue_sharing else "Disabled")
+    return [
+        ("Rules", r.source + (f" - {r.agreement}" if r.agreement != "Custom" else "")
+         + (" (provisional)" if r.provisional else "")),
+        ("Season", str(r.season)),
+        ("Salary cap", cap),
+        ("Salary floor", floor),
+        ("Competitive Balance Tax", cbt),
+        ("CBT payroll", measure),
+        ("Revenue sharing", sharing),
+        ("League minimum salary", fmt(r.min_salary)),
+    ]
+
+
+def rules_view(r: finance.FinancialRules, title: str | None = None) -> str:
+    rows = rules_rows(r)
+    width = max(len(label) for label, _ in rows)
+    lines = [title] if title else []
+    lines += [f"  {label:<{width}}  {value}" for label, value in rows]
+    lines += [f"  Note: {note}" for note in r.notes]
+    proposals = finance.proposed_terms(r.season)
+    if proposals and r.source == finance.PRESET_LABELS[finance.PRESET_MLB]:
+        lines.append("  Not in effect (proposals are never applied as league rules):")
+        lines += [f"    - {t.party}: {t.summary} [{t.status}]" for t in proposals]
+    return "\n".join(lines)
+
+
+def league_finances_view(league: League) -> str:
+    """Every club's payroll position under the current rules, plus the user's past seasons."""
+    r = finance.rules(league)
+    streaks = league.finance.state.streaks
+    rows = []
+    for team in sorted(league.teams.values(), key=lambda t: -finance.payroll(league, t)):
+        bill = finance.projected_tax(league, team)
+        rows.append([team.abbr + (" *" if team.abbr == league.user_team else ""), fmt(finance.payroll(league, team)),
+                     fmt(bill.cbt_payroll), fmt(bill.total) if bill.total else "-",
+                     streaks.get(team.abbr, 0) or "-", fmt(finance.payroll_budget(league, team))])
+    lines = [rules_view(r, f"League financial rules ({finance.contract_season(league)})"), "",
+             "Club payrolls (projected for the season)",
+             table(["Club", "Payroll", "CBT payroll", "Proj. tax", "Yrs over", "Budget"], rows, "lrrrrr")]
+    past = [row for row in league.finance.state.ledger if row["team"] == league.user_team]
+    if past:
+        lines += ["", f"{league.user_team} finances by season"]
+        lines.append(table(
+            ["Year", "Revenue", "Shared out", "Shared in", "Payroll", "CBT payroll", "CBT tax", "Penalties", "Net"],
+            [[row["year"], fmt(row["revenue"]), fmt(row["shared_out"]), fmt(row["shared_in"]), fmt(row["payroll"]),
+              fmt(row["cbt_payroll"]), fmt(row["cbt_tax"]), fmt(row["soft_cap_penalty"] + row["floor_penalty"]),
+              fmt(row["net"])] for row in past], "rrrrrrrrr"))
+    if league.finance.state.changes:
+        lines += ["", "Rule changes made to this league"]
+        lines += [f"  {c['year']} ({c['phase']}): {finance.PRESET_LABELS.get(c['preset'], c['preset'])} from "
+                  f"{c['season']}" for c in league.finance.state.changes]
+    return "\n".join(lines)

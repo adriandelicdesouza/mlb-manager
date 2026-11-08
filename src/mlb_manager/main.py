@@ -7,10 +7,10 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from mlb_manager import __version__, views
+from mlb_manager import __version__, finance, views
 from mlb_manager.cli import App, QuitApp
 from mlb_manager.franchises import FRANCHISES_BY_ABBR, LEAGUES
-from mlb_manager.league import League
+from mlb_manager.league import DEFAULT_YEAR, League
 from mlb_manager.persistence import SaveError, load_league
 
 
@@ -28,7 +28,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--save-dir", type=Path, metavar="DIR",
                         help="directory for saves (default: ./saves or $MLB_MANAGER_SAVE_DIR)")
     parser.add_argument("--salary-cap", type=float, metavar="MILLIONS",
-                        help="salary cap in $M for a new league (default: 125)")
+                        help="custom hard salary cap in $M for a new league "
+                             "(default: standard MLB rules - no cap, Competitive Balance Tax)")
+    parser.add_argument("--season", type=int, metavar="YEAR",
+                        help=f"starting season for a new league ({finance.MIN_SEASON}-{finance.MAX_SEASON}, "
+                             f"default {DEFAULT_YEAR})")
     parser.add_argument("--simulate-season", action="store_true",
                         help="non-interactive: simulate a full season and print a summary")
     parser.add_argument("--cli", action="store_true",
@@ -43,8 +47,8 @@ def use_tui(args: argparse.Namespace) -> bool:
     return not args.cli and tui.available() and sys.stdin.isatty() and sys.stdout.isatty()
 
 
-def simulate_season(seed: int, team: str) -> str:
-    league = League.create(seed=seed, user_team=team)
+def simulate_season(seed: int, team: str, year: int = DEFAULT_YEAR) -> str:
+    league = League.create(seed=seed, user_team=team, year=year)
     league.sim_to_completion()
     parts = [views.title(f"{league.year} season summary (seed {seed})")]
     for lg in LEAGUES:
@@ -65,8 +69,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.team and args.team not in FRANCHISES_BY_ABBR:
         parser.error(f"unknown team {args.team!r}; choose from {', '.join(sorted(FRANCHISES_BY_ABBR))}")
 
+    if args.season is not None and finance.validate_season(args.season):
+        parser.error(finance.validate_season(args.season)[0])
     if args.simulate_season:
-        print(simulate_season(args.seed if args.seed is not None else 1, args.team or "NYY"))
+        print(simulate_season(args.seed if args.seed is not None else 1, args.team or "NYY",
+                              args.season or DEFAULT_YEAR))
         return 0
 
     if args.salary_cap is not None and args.salary_cap <= 0:
@@ -84,8 +91,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             save_path = args.load
         return tui.run(league=league, save_path=save_path, save_dir=args.save_dir, salary_cap=args.salary_cap,
                        new_team=args.team if (args.new or args.team) and league is None else None,
-                       new_seed=args.seed)
-    app = App(save_dir=args.save_dir, salary_cap=args.salary_cap)
+                       new_seed=args.seed, new_year=args.season)
+    app = App(save_dir=args.save_dir, salary_cap=args.salary_cap, start_year=args.season)
     if args.load:
         try:
             league = load_league(args.load)

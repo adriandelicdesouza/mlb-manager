@@ -10,9 +10,12 @@ import random
 from collections.abc import Callable
 from pathlib import Path
 
-from mlb_manager import __version__, contracts, freeagency, frontoffice, roster, trades, views
+from dataclasses import replace
+
+from mlb_manager import __version__, contracts, finance, freeagency, frontoffice, roster, trades, views
 from mlb_manager.franchises import FRANCHISES_BY_ABBR
 from mlb_manager.league import (
+    DEFAULT_YEAR,
     PHASE_COMPLETE,
     PHASE_DRAFT,
     PHASE_FREE_AGENCY,
@@ -44,8 +47,10 @@ class App:
         output_fn: Callable[[str], None] = print,
         save_dir: Path | None = None,
         salary_cap: float | None = None,
+        start_year: int | None = None,
     ) -> None:
         self.salary_cap = salary_cap
+        self.start_year = start_year or DEFAULT_YEAR
         self._input = input_fn
         self._output = output_fn
         self.save_dir = save_dir or default_save_dir()
@@ -159,8 +164,12 @@ class App:
                     seed = int.from_bytes(raw.encode()[:8].ljust(8, b"\0"), "big") % 10**9
             else:
                 seed = random.SystemRandom().randrange(1, 10**6)
+        setup = self.league_setup(team, seed)
+        if setup is None:
+            return False
+        year, config = setup
         self.say(f"Generating league with seed {seed} ...")
-        self.league = League.create(seed=seed, user_team=team, salary_cap=self.salary_cap)
+        self.league = League.create(seed=seed, user_team=team, year=year, finance_config=config)
         self.save_path = None
         self.dirty = True
         self.say(f"You are now the manager of the {self.league.user.full_name}.")
@@ -183,13 +192,207 @@ class App:
         else:
             path = resolve_save_path(raw, self.save_dir)
         try:
-            self.league = load_league(path)
+            league = load_league(path)
         except SaveError as exc:
             self.say(f"Error: {exc}")
             return False
+        changed = self.review_loaded(league, path)
+        if changed is None:
+            return False
+        self.league = league
         self.save_path = path
-        self.dirty = False
+        self.dirty = changed
         self.say(f"Loaded {path.name}: {self.league.user.full_name}, {self.league.year}.")
+        return True
+
+    # ------------------------------------------------------------------ league setup & rules
+
+    def ask_amount(self, prompt: str, default: float) -> float:
+        """Ask for a money amount ($M); Enter keeps ``default``."""
+        while True:
+            raw = self.ask(f"{prompt} [{finance.format_amount(default)}]: ")
+            if not raw:
+                return default
+            try:
+                return finance.parse_amount(raw)
+            except ValueError as exc:
+                self.say(str(exc))
+
+    def ask_rate(self, prompt: str, default: float) -> float:
+        while True:
+            raw = self.ask(f"{prompt} [{finance.format_rate(default)}]: ")
+            if not raw:
+                return default
+            try:
+                return finance.parse_rate(raw)
+            except ValueError as exc:
+                self.say(str(exc))
+
+    def ask_yes_no(self, prompt: str, default: bool) -> bool:
+        raw = self.ask(f"{prompt} [{'Y/n' if default else 'y/N'}]: ").lower()
+        return default if not raw else raw in ("y", "yes")
+
+    def league_setup(self, team: str, seed: int) -> tuple[int, finance.FinanceConfig] | None:
+        """New-league configuration: starting season and financial rules. None = cancelled."""
+        year = self.start_year
+        preset = finance.PRESET_MLB
+        custom: finance.FinancialRules | None = None
+        if self.salary_cap is not None:
+            preset = finance.PRESET_CUSTOM
+            custom = replace(finance.default_custom_rules(year), cap_type=finance.CAP_HARD, cap_amount=self.salary_cap)
+        while True:
+            config = finance.new_config(year, preset, custom)
+            self.say("")
+            self.say(views.title("League setup"))
+            self.say(f"  Club {team}   Seed {seed}   Starting season {year}")
+            self.say(views.rules_view(config.rules_for(year), f"Financial structure: {finance.PRESET_LABELS[preset]}"))
+            choice = self.menu("Setup", [
+                ("1", "Start the league with these settings"),
+                ("2", "Use standard MLB rules for the starting season"),
+                ("3", "Customise financial rules"),
+                ("4", "Change starting season"),
+                ("0", "Cancel"),
+            ])
+            if choice == "0":
+                return None
+            if choice == "1":
+                return year, config
+            if choice == "2":
+                preset, custom = finance.PRESET_MLB, None
+            elif choice == "3":
+                edited = self.edit_rules(custom or finance.default_custom_rules(year))
+                if edited is not None:
+                    preset, custom = finance.PRESET_CUSTOM, edited
+            elif choice == "4":
+                value = self.ask_int(f"Starting season ({finance.MIN_SEASON}-{finance.MAX_SEASON}): ",
+                                     finance.MIN_SEASON, finance.MAX_SEASON)
+                if value is not None:
+                    year = value
+                    if custom is not None and preset == finance.PRESET_CUSTOM:
+                        custom = replace(custom, season=year)
+
+    def edit_rules(self, rules: finance.FinancialRules) -> finance.FinancialRules | None:
+        """Edit custom financial rules; None when the changes are discarded."""
+        r = rules
+        while True:
+            self.say("")
+            self.say(views.rules_view(r, "Custom financial rules"))
+            options = [
+                ("1", f"Salary cap type ({finance.CAP_LABELS[r.cap_type]})"),
+                ("2", "Salary floor"),
+                ("3", "Competitive Balance Tax"),
+                ("4", "Revenue sharing"),
+                ("5", f"League minimum salary ({finance.format_amount(r.min_salary)})"),
+            ]
+            if r.has_cap:
+                options.insert(1, ("6", f"Salary cap amount ({finance.format_amount(r.cap_amount)})"))
+            if r.soft_cap:
+                options.insert(2, ("7", "Soft-cap exceptions and penalty"))
+            options += [("8", "Done"), ("0", "Discard changes")]
+            choice = self.menu("Edit rules", options)
+            if choice == "0":
+                return None
+            if choice == "8":
+                errors = finance.validate_rules(r)
+                if not errors:
+                    return r
+                self.say("Please fix these settings first:")
+                for error in errors:
+                    self.say(f"  - {error}")
+            elif choice == "1":
+                kind = self.menu("Salary cap", [("1", "No salary cap (unlimited payroll)"),
+                                                ("2", "Soft cap (exceptions and penalties)"), ("3", "Hard cap")])
+                cap_type = {"1": finance.CAP_NONE, "2": finance.CAP_SOFT, "3": finance.CAP_HARD}[kind]
+                amount = r.cap_amount
+                if cap_type != finance.CAP_NONE:
+                    amount = self.ask_amount("Cap amount", r.cap_amount or finance.SUGGESTED_CAP)
+                r = replace(r, cap_type=cap_type, cap_amount=amount)
+            elif choice == "6":
+                r = replace(r, cap_amount=self.ask_amount("Cap amount", r.cap_amount))
+            elif choice == "7":
+                exceptions = [e for e in finance.SOFT_CAP_EXCEPTIONS
+                              if self.ask_yes_no(f"Allow: {finance.SOFT_CAP_EXCEPTIONS[e]}?",
+                                                 e in r.soft_cap_exceptions)]
+                r = replace(r, soft_cap_exceptions=tuple(exceptions),
+                            soft_cap_tax_rate=self.ask_rate("Penalty per $ of payroll above the soft cap",
+                                                            r.soft_cap_tax_rate),
+                            trade_match_pct=self.ask_rate("Trades may take back up to this share of outgoing salary",
+                                                          r.trade_match_pct))
+            elif choice == "2":
+                if self.ask_yes_no("Use a salary floor?", r.floor_enabled):
+                    r = replace(r, floor_enabled=True,
+                                floor_amount=self.ask_amount("Floor amount", r.floor_amount or finance.SUGGESTED_FLOOR),
+                                floor_penalty_rate=self.ask_rate("Share of the shortfall charged",
+                                                                 r.floor_penalty_rate))
+                else:
+                    r = replace(r, floor_enabled=False)
+            elif choice == "3":
+                if self.ask_yes_no("Use a Competitive Balance Tax?", r.cbt_enabled):
+                    threshold = self.ask_amount("CBT threshold", r.cbt_threshold)
+                    rates = tuple(self.ask_rate(f"Tax rate, {n} consecutive season over", v)
+                                  for n, v in zip(("1st", "2nd", "3rd+"), r.cbt_rates, strict=True))
+                    r = replace(r, cbt_enabled=True, cbt_threshold=threshold, cbt_rates=rates)  # type: ignore[arg-type]
+                else:
+                    r = replace(r, cbt_enabled=False)
+            elif choice == "4":
+                if self.ask_yes_no("Use revenue sharing?", r.revenue_sharing):
+                    r = replace(r, revenue_sharing=True,
+                                revenue_sharing_rate=self.ask_rate("Share of local revenue pooled",
+                                                                   r.revenue_sharing_rate))
+                else:
+                    r = replace(r, revenue_sharing=False)
+            elif choice == "5":
+                r = replace(r, min_salary=self.ask_amount("League minimum salary", r.min_salary))
+
+    def review_loaded(self, league: League, path: Path) -> bool | None:
+        """Show a loaded save's financial rules; allow edits. None = cancel, else whether rules changed."""
+        changed = False
+        while True:
+            self.say("")
+            self.say(views.title(f"Load {path.name}"))
+            self.say(f"  {league.user.full_name}, {league.year} - {views.phase_label(league)}")
+            if league.finance.migrated:
+                self.say("  Upgraded save: " + " ".join(finance.migration_notes(league)))
+            self.say(views.rules_view(finance.rules(league), "Current financial rules"))
+            self.say("  " + views.payroll_status(league, league.user))
+            choice = self.menu("Load", [("1", "Continue with these rules"), ("2", "Edit financial rules"),
+                                        ("0", "Cancel")])
+            if choice == "0":
+                return None
+            if choice == "1":
+                league.finance.migrated = False
+                return changed
+            if self.edit_loaded_rules(league):
+                changed = True
+
+    def edit_loaded_rules(self, league: League) -> bool:
+        current = finance.rules(league)
+        options = [("1", "Standard MLB rules"), ("2", "Custom rules (start from the current rules)")]
+        legacy = finance.restore_legacy_cap_rules(league)
+        if legacy is not None:
+            options.append(("3", f"Restore the previous {finance.format_amount(legacy.cap_amount)} hard cap"))
+        options.append(("0", "Back"))
+        choice = self.menu("Financial rules", options)
+        if choice == "0":
+            return False
+        preset, custom = finance.PRESET_MLB, None
+        if choice == "2":
+            base = replace(current, source=finance.PRESET_LABELS[finance.PRESET_CUSTOM], agreement="Custom",
+                           provisional=False, notes=())
+            custom = self.edit_rules(base)
+            if custom is None:
+                return False
+            preset = finance.PRESET_CUSTOM
+        elif choice == "3":
+            preset, custom = finance.PRESET_CUSTOM, legacy
+        self.say("")
+        self.say("What changes:")
+        for line in finance.preview_change(league, preset, custom):
+            self.say(f"  - {line}")
+        if not self.confirm("Apply these rules?"):
+            return False
+        for line in finance.change_rules(league, preset, custom):
+            self.say(f"  {line}")
         return True
 
     # ------------------------------------------------------------------ franchise hub
@@ -636,6 +839,7 @@ class App:
             "4": self.draft_menu,
             "5": self.prospects_menu,
             "6": lambda: self.say(views.transactions_view(self.league)),
+            "7": lambda: self.say(views.league_finances_view(self.league)),
         }
         while True:
             self.say("")
@@ -647,6 +851,7 @@ class App:
                 ("4", "Draft"),
                 ("5", "Minor League / Prospects"),
                 ("6", "League transactions"),
+                ("7", "League finances & financial rules (CBT, cap, revenue sharing)"),
                 ("0", "Back"),
             ])
             if choice == "0":

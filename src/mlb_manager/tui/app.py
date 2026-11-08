@@ -17,9 +17,10 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, ContentSwitcher, DataTable, Footer, Input, Select, Static
 
-from mlb_manager import __version__, contracts, frontoffice, views
+from mlb_manager import __version__, contracts, finance, frontoffice, views
 from mlb_manager.franchises import FRANCHISES
 from mlb_manager.league import (
+    DEFAULT_YEAR,
     PHASE_COMPLETE,
     PHASE_DRAFT,
     PHASE_FREE_AGENCY,
@@ -186,12 +187,15 @@ class FranchiseScreen(Screen[None]):
         rec = lg.records()[team.abbr]
         acc = theme.accent(team.abbr)
         payroll = contracts.payroll(team, lg.players)
+        r = finance.rules(lg)
+        cap = (f"{r.cap_type} cap {finance.format_amount(r.cap_amount)}" if r.has_cap else "no cap")
+        cbt = f" · CBT {finance.format_amount(r.cbt_threshold)}" if r.cbt_enabled else ""
         busy = "   · simulating…" if self.mlb.busy else ""
         dirty = "  ·  unsaved" if self.mlb.dirty else ""
         self.query_one("#topbar", Static).update(
             f"[b {acc}]{team.abbr}[/]  {team.full_name}   │   {lg.year} · {views.phase_label(lg)}   │   "
             f"{rec.wins}-{rec.losses} · {views.division_position(lg, team.abbr)}   │   "
-            f"Payroll ${payroll:.1f}M / ${lg.salary_cap:.0f}M{dirty}{busy}")
+            f"Payroll ${payroll:.1f}M · {cap}{cbt}{dirty}{busy}")
         current = self.query_one("#main", ContentSwitcher).current
         for pane_id, *_ in PANES:
             button = self.query_one(f"#nav-{pane_id}", Button)
@@ -293,6 +297,7 @@ class MLBManagerApp(App[None]):
         salary_cap: float | None = None,
         new_team: str | None = None,
         new_seed: int | None = None,
+        new_year: int | None = None,
     ) -> None:
         super().__init__()
         self.league = league
@@ -303,13 +308,15 @@ class MLBManagerApp(App[None]):
         self.busy = False
         self._new_team = new_team
         self._new_seed = new_seed
+        self._new_year = new_year
         self.last_sim_summary = ""
 
     def on_mount(self) -> None:
         if self.league is None and self._new_team:
             self.league = League.create(seed=self._new_seed if self._new_seed is not None
                                         else random.SystemRandom().randrange(1, 10**6),
-                                        user_team=self._new_team, salary_cap=self.salary_cap)
+                                        user_team=self._new_team, salary_cap=self.salary_cap,
+                                        year=self._new_year or DEFAULT_YEAR)
             self.dirty = True
         if self.league is not None:
             self.push_screen(FranchiseScreen())
@@ -319,23 +326,39 @@ class MLBManagerApp(App[None]):
     # -- league lifecycle ------------------------------------------------------------
 
     def start_new(self, team: str, seed: int | None) -> None:
+        """Open the league setup screen (season and financial rules) for a new franchise."""
+        from mlb_manager.tui.setup import LeagueSetupScreen
+
         seed = seed if seed is not None else random.SystemRandom().randrange(1, 10**6)
-        self.league = League.create(seed=seed, user_team=team, salary_cap=self.salary_cap)
+        self.switch_screen(LeagueSetupScreen(team, seed, self.salary_cap))
+
+    def create_league(self, team: str, seed: int, year: int, config: finance.FinanceConfig) -> None:
+        self.league = League.create(seed=seed, user_team=team, year=year, finance_config=config)
         self.save_path = None
         self.dirty = True
         self.switch_screen(FranchiseScreen())
         self.notify(f"You are now the manager of the {self.league.user.full_name} (seed {seed}).")
 
+    def back_to_title(self) -> None:
+        self.switch_screen(TitleScreen())
+
     def load(self, path: Path) -> None:
+        """Read a save and show its financial rules for review before continuing."""
+        from mlb_manager.tui.setup import LoadReviewScreen
+
         try:
-            self.league = load_league(path)
+            league = load_league(path)
         except SaveError as exc:
             self.notify(str(exc), severity="error", timeout=8)
             return
+        self.switch_screen(LoadReviewScreen(league, path))
+
+    def finish_load(self, league: League, path: Path, changed: bool) -> None:
+        self.league = league
         self.save_path = path
-        self.dirty = False
+        self.dirty = changed
         self.switch_screen(FranchiseScreen())
-        self.notify(f"Loaded {path.name}.")
+        self.notify(f"Loaded {path.name}." + (" Financial rules updated (unsaved)." if changed else ""))
 
     def save(self, path: Path | None = None) -> Path | None:
         if self.league is None:
@@ -589,6 +612,7 @@ class MLBManagerApp(App[None]):
 
 
 def run(league: League | None = None, save_path: Path | None = None, save_dir: Path | None = None,
-        salary_cap: float | None = None, new_team: str | None = None, new_seed: int | None = None) -> int:
-    MLBManagerApp(league, save_path, save_dir, salary_cap, new_team, new_seed).run()
+        salary_cap: float | None = None, new_team: str | None = None, new_seed: int | None = None,
+        new_year: int | None = None) -> int:
+    MLBManagerApp(league, save_path, save_dir, salary_cap, new_team, new_seed, new_year).run()
     return 0

@@ -14,7 +14,7 @@ from textual.containers import Grid, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Select, Static, TabbedContent, TabPane
 
-from mlb_manager import contracts, development, freeagency, morale, roster, trades, views
+from mlb_manager import contracts, development, finance, freeagency, morale, roster, trades, views
 from mlb_manager import ratings as rt
 from mlb_manager.league import PHASE_DRAFT, PHASE_POSTSEASON, ContractError, League
 from mlb_manager.models import Player
@@ -96,9 +96,21 @@ class DashboardPane(Pane):
         self.query_one("#dash-recent", Static).update("\n".join(recent) or "No games played yet.")
         commitments = contracts.commitments(team, lg.players, seasons=2)
         payroll = contracts.payroll(team, lg.players)
+        r = finance.rules(lg)
+        room = finance.cap_room(lg, team)
+        cap_line = ("Cap       none (unlimited)" if room is None else
+                    f"Cap       {finance.format_amount(r.cap_amount)} {r.cap_type} · "
+                    + (f"room {money(room)}" if room >= 0 else f"OVER {money(-room)}"))
+        if r.cbt_enabled:
+            bill = finance.projected_tax(lg, team)
+            cbt_line = (f"CBT       {finance.format_amount(bill.cbt_payroll)} / {finance.format_amount(r.cbt_threshold)}"
+                        + (f" · tax {finance.format_amount(bill.total)}" if bill.total else ""))
+        else:
+            cbt_line = "CBT       none"
+        floor_line = f"\nFloor     {finance.format_amount(r.floor_amount)}" if r.has_floor else ""
         self.query_one("#dash-payroll", Static).update(
-            f"Payroll   {money(payroll)}\nCap       {money(lg.salary_cap)}\n"
-            f"Space     {money(lg.salary_cap - payroll)}\nNext year {money(commitments[1])} committed\n"
+            f"Payroll   {money(payroll)}\n{cap_line}{floor_line}\n{cbt_line}\n"
+            f"Next year {money(commitments[1])} committed\n"
             f"Org {len(team.all_players)}/45 · active {len(team.active)}/26")
         hurt = lg.injured_players(team)
         lines = [f"{p.short_name:<14} {p.position:<2} {p.injury or 'rusty':<18.18} {health_of(p):>5}"
@@ -748,9 +760,8 @@ class FreeAgencyPane(Pane):
             rows.append((str(p.id), [p.name, p.position, p.age, p.overall, pot, money(salary), years]))
         fill_table(self.query_one("#fa-table", DataTable), ["Player", "Pos", "Age", "OVR", "POT", "Asking", "Yrs"],
                    rows)
-        space = contracts.cap_space(lg.user, lg.players, lg.salary_cap)
         self.query_one("#fa-hint", Static).update(
-            f"Cap space {money(space)} · organisation {len(lg.user.all_players)}/45"
+            f"{views.cap_text(lg, lg.user)} · organisation {len(lg.user.all_players)}/45"
             + (" · in-season free agents take one-year deals" if lg.in_season else ""))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -800,6 +811,7 @@ SEASON_TABS: tuple[tuple[str, str], ...] = (
     ("standings", "Standings"), ("leaders", "Statistics"), ("career", "Career leaders"),
     ("awards", "Awards"), ("milestones", "Milestones"), ("records", "Franchise records"),
     ("postseason", "Postseason"), ("titles", "Championships"), ("retired", "Retired"),
+    ("finances", "Finances"),
 )
 
 
@@ -834,6 +846,7 @@ class SeasonPane(Pane):
             "postseason": views.bracket_view(lg) + "\n\n" + views.postseason_history_view(lg),
             "titles": views.championships_view(lg) + "\n\n" + views.franchise_history(lg),
             "retired": views.retired_view(lg, limit=60),
+            "finances": views.league_finances_view(lg),
         }
         for key, text in texts.items():
             self.query_one(f"#season-text-{key}", Static).update(text)
