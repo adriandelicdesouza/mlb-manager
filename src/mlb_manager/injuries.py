@@ -6,12 +6,18 @@
   healthy bench player without touching the manager's saved lineup, so a
   player returns to his spot automatically once healthy.
 * Placing a player on the IL frees his active-roster spot for a call-up.
+* Some players are durable and some injury-prone (a stable per-player trait
+  derived from the league seed); recent serious injuries raise the risk too.
+* Players returning from a long injury go on a rehab assignment with the
+  minor league club (the reserves). Players activated without one return
+  "rusty": slightly reduced ratings and a higher injury risk for a few days.
 """
 
 from __future__ import annotations
 
+import functools
 import random
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 
 from mlb_manager import ratings as rt
@@ -20,6 +26,14 @@ from mlb_manager.game import TeamBox
 from mlb_manager.models import LineupSlot, Player, Team
 
 IL_THRESHOLD_DAYS = 6  # CPU clubs IL anyone out longer than day-to-day
+REHAB_WINDOW_DAYS = 10  # an IL player can start a rehab assignment this close to returning
+CPU_REHAB_DAYS = 7  # CPU clubs start rehab assignments at this point
+REHAB_MIN_INJURY = 15  # only injuries of at least this length cause rust / need rehab
+MAX_RUST_DAYS = 12
+RUST_PENALTY = 3  # rating points while rusty
+RUST_RISK = 1.25
+INJURY_HISTORY_LIMIT = 15
+SERIOUS_INJURY_DAYS = 21
 BATTER_RISK = 0.0040  # per game started
 STARTER_RISK = 0.0110  # per start
 RELIEVER_RISK = 0.0040  # per appearance
@@ -45,18 +59,58 @@ PITCHER_INJURIES: dict[str, tuple[str, ...]] = {
 }
 
 
+# (trait, probability, risk multiplier)
+DURABILITY: tuple[tuple[str, float, float], ...] = (
+    ("durable", 0.20, 0.70),
+    ("normal", 0.65, 1.00),
+    ("injury-prone", 0.15, 1.50),
+)
+
+
 def is_healthy(player: Player) -> bool:
     return player.injury_days <= 0
 
 
-def injury_risk(player: Player, starter_pitches: int | None = None, relief: bool = False) -> float:
+def durability(player: Player, seed: int | str) -> str:
+    """Stable per-player injury tendency (not stored: derived from seed and id)."""
+    return _durability(str(seed), player.id)
+
+
+@functools.lru_cache(maxsize=8192)
+def _durability(seed: str, player_id: int) -> str:
+    roll = random.Random(f"{seed}:durability:{player_id}").random()
+    acc = 0.0
+    for trait, prob, _ in DURABILITY:
+        acc += prob
+        if roll < acc:
+            return trait
+    return DURABILITY[-1][0]
+
+
+def recent_serious_injuries(player: Player, year: int) -> int:
+    return sum(1 for h in player.injury_history
+               if h.get("n", 0) >= SERIOUS_INJURY_DAYS and year - int(h.get("y", year)) <= 1)
+
+
+def risk_multiplier(player: Player, seed: int | str, year: int) -> float:
+    """Combined tendency: durability trait, recent serious injuries and rust."""
+    trait = durability(player, seed)
+    factor = next(mult for name, _, mult in DURABILITY if name == trait)
+    factor *= 1 + min(3, recent_serious_injuries(player, year)) * 0.12
+    if player.rust_days > 0:
+        factor *= RUST_RISK
+    return factor
+
+
+def injury_risk(player: Player, starter_pitches: int | None = None, relief: bool = False,
+                multiplier: float = 1.0) -> float:
     if starter_pitches is not None:
         risk = STARTER_RISK * (1 + max(0, starter_pitches - 100) * 0.02)
     elif relief:
         risk = RELIEVER_RISK
     else:
         risk = BATTER_RISK
-    return risk * (1 + max(0, player.age - 30) * 0.05)
+    return risk * (1 + max(0, player.age - 30) * 0.05) * multiplier
 
 
 def roll_injury(player: Player, rng: random.Random) -> tuple[str, int]:
@@ -74,37 +128,60 @@ def roll_injury(player: Player, rng: random.Random) -> tuple[str, int]:
 
 
 def injuries_from_game(
-    boxes: tuple[TeamBox, TeamBox], players: Mapping[int, Player], rng: random.Random
+    boxes: tuple[TeamBox, TeamBox], players: Mapping[int, Player], rng: random.Random,
+    multiplier: Callable[[Player], float] | None = None,
 ) -> list[tuple[Player, str, int]]:
     """Roll injuries for everyone who appeared in a game."""
     results: list[tuple[Player, str, int]] = []
+    mult = multiplier or (lambda _p: 1.0)
     for box in boxes:
         for pid, _ in box.batting_order:
             player = players[pid]
-            if rng.random() < injury_risk(player):
+            if rng.random() < injury_risk(player, multiplier=mult(player)):
                 results.append((player, *roll_injury(player, rng)))
         for pid, line in box.pitching.items():
             player = players[pid]
-            risk = injury_risk(player, starter_pitches=line.pitches) if line.gs else injury_risk(player, relief=True)
+            factor = mult(player)
+            risk = (injury_risk(player, starter_pitches=line.pitches, multiplier=factor) if line.gs
+                    else injury_risk(player, relief=True, multiplier=factor))
             if rng.random() < risk:
                 results.append((player, *roll_injury(player, rng)))
     return results
 
 
-def apply_injury(player: Player, description: str, days: int) -> None:
+def apply_injury(player: Player, description: str, days: int,
+                 year: int | None = None, day: int | None = None) -> None:
     if days > player.injury_days:
         player.injury = description
         player.injury_days = days
+        player.injury_total = days
+        player.rehab = False
+    if year is not None:
+        player.injury_history.append({"y": year, "d": (day or 0) + 1, "i": description, "n": days})
+        if len(player.injury_history) > INJURY_HISTORY_LIMIT:
+            del player.injury_history[: len(player.injury_history) - INJURY_HISTORY_LIMIT]
+
+
+def rust_after(player: Player) -> int:
+    """Days of reduced form after returning from the current injury without rehab."""
+    if player.injury_total < REHAB_MIN_INJURY:
+        return 0
+    return min(MAX_RUST_DAYS, player.injury_total // 5)
 
 
 def heal_one_day(player: Player) -> bool:
     """Returns True when the player becomes healthy today."""
+    if player.rust_days > 0 and player.injury_days <= 0:
+        player.rust_days -= 1
     if player.injury_days <= 0:
         return False
     player.injury_days -= 1
     if player.injury_days <= 0:
+        player.rust_days = 0 if player.rehab else rust_after(player)
         player.injury_days = 0
         player.injury = None
+        player.injury_total = 0
+        player.rehab = False
         return True
     return False
 
@@ -112,6 +189,38 @@ def heal_one_day(player: Player) -> bool:
 def heal_fully(player: Player) -> None:
     player.injury_days = 0
     player.injury = None
+    player.injury_total = 0
+    player.rehab = False
+    player.rust_days = 0
+
+
+def can_rehab(team: Team, player: Player) -> bool:
+    return (player.id in team.injured_list and player.is_injured
+            and player.injury_days <= REHAB_WINDOW_DAYS)
+
+
+def start_rehab(team: Team, players: Mapping[int, Player], player_id: int) -> str:
+    """Send an IL player who is close to returning on a rehab assignment (to the reserves)."""
+    player = players[player_id]
+    if player_id not in team.injured_list:
+        raise roster.RosterError(f"{player.name} is not on the injured list.")
+    if not player.is_injured:
+        raise roster.RosterError(f"{player.name} is already healthy; activate him instead.")
+    if player.injury_days > REHAB_WINDOW_DAYS:
+        raise roster.RosterError(
+            f"{player.name} needs {player.injury_days} more days; rehab assignments start "
+            f"{REHAB_WINDOW_DAYS} days before a return."
+        )
+    team.injured_list.remove(player_id)
+    team.reserves.append(player_id)
+    player.rehab = True
+    return (f"{player.name} begins a rehab assignment in the minors "
+            f"(~{player.injury_days} day(s) until he is ready).")
+
+
+def form_modifier(player: Player) -> int:
+    """Rating points lost to rust after an injury."""
+    return -RUST_PENALTY if player.rust_days > 0 else 0
 
 
 # ----------------------------------------------------------------------------- IL moves
@@ -134,8 +243,17 @@ def place_on_il(team: Team, players: Mapping[int, Player], player_id: int) -> li
 
 
 def activate_from_il(team: Team, players: Mapping[int, Player], player_id: int) -> str:
-    """Return a healthy IL player to the active roster (or the minors if it is full)."""
+    """Return a healthy IL player (or a finished rehab player) to the active roster.
+
+    Falls back to the minors if the active roster is full.
+    """
     player = players[player_id]
+    if player_id in team.reserves and not player.is_injured and not player.rehab:
+        try:
+            roster.promote(team, players, player_id)
+        except roster.RosterError as exc:
+            return f"{player.name} finished his rehab but stays in the minors: {exc}"
+        return f"{player.name} activated after his rehab assignment."
     if player_id not in team.injured_list:
         raise roster.RosterError(f"{player.name} is not on the injured list.")
     if player.is_injured:

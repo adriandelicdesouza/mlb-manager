@@ -59,6 +59,28 @@ class BattingStats:
     def from_dict(cls, data: dict[str, Any] | None) -> BattingStats:
         return cls(**(data or {}))
 
+    def to_list(self) -> list[int]:
+        """Compact positional form used for career history."""
+        return [getattr(self, f.name) for f in fields(self)]
+
+    @classmethod
+    def from_list(cls, values: list[int] | None) -> BattingStats:
+        names = [f.name for f in fields(cls)]
+        return cls(**dict(zip(names, (int(v) for v in (values or [])), strict=False)))
+
+    def copy(self) -> BattingStats:
+        return type(self).from_list(self.to_list())
+
+    def minus(self, other: BattingStats) -> BattingStats:
+        out = self.copy()
+        for f in fields(out):
+            setattr(out, f.name, getattr(out, f.name) - getattr(other, f.name))
+        return out
+
+    @property
+    def is_empty(self) -> bool:
+        return not any(self.to_list())
+
 
 @dataclass(slots=True)
 class PitchingStats:
@@ -103,6 +125,28 @@ class PitchingStats:
     def from_dict(cls, data: dict[str, Any] | None) -> PitchingStats:
         return cls(**(data or {}))
 
+    def to_list(self) -> list[int]:
+        """Compact positional form used for career history."""
+        return [getattr(self, f.name) for f in fields(self)]
+
+    @classmethod
+    def from_list(cls, values: list[int] | None) -> PitchingStats:
+        names = [f.name for f in fields(cls)]
+        return cls(**dict(zip(names, (int(v) for v in (values or [])), strict=False)))
+
+    def copy(self) -> PitchingStats:
+        return type(self).from_list(self.to_list())
+
+    def minus(self, other: PitchingStats) -> PitchingStats:
+        out = self.copy()
+        for f in fields(out):
+            setattr(out, f.name, getattr(out, f.name) - getattr(other, f.name))
+        return out
+
+    @property
+    def is_empty(self) -> bool:
+        return not any(self.to_list())
+
 
 @dataclass(slots=True)
 class Player:
@@ -133,6 +177,21 @@ class Player:
     injury_days: int = 0  # days until healthy (0 = healthy)
     service_years: int = 0  # completed MLB seasons (rookie = 0)
     games_by_pos: dict[str, int] = field(default_factory=dict)  # season games started per position
+    # Careers, injuries and morale (v0.4) -----------------------------------------
+    # Postseason lines for the current season, keyed by round code (WC/DS/CS/WS);
+    # never mixed into ``batting``/``pitching``.
+    post_batting: dict[str, BattingStats] = field(default_factory=dict)
+    post_pitching: dict[str, PitchingStats] = field(default_factory=dict)
+    # Regular-season stats accumulated with earlier clubs this season (closed at a
+    # trade/release): [{"t": team, "b": [...], "p": [...]}].
+    stints: list[dict[str, Any]] = field(default_factory=list)
+    # Archived seasons, one entry per (year, club): {"y", "t", "b", "p", "post"?}.
+    history: list[dict[str, Any]] = field(default_factory=list)
+    injury_total: int = 0  # length of the current injury when it happened
+    injury_history: list[dict[str, Any]] = field(default_factory=list)  # {"y", "d", "i", "n"}
+    rehab: bool = False  # on a rehab assignment with the minor league club
+    rust_days: int = 0  # returned from a long injury without rehab: reduced form
+    morale: int = 50  # 0-100, 50 = neutral
 
     @property
     def is_injured(self) -> bool:
@@ -183,6 +242,9 @@ class Player:
         self.batting = BattingStats()
         self.pitching = PitchingStats()
         self.games_by_pos = {}
+        self.post_batting = {}
+        self.post_pitching = {}
+        self.stints = []
 
     @property
     def main_position(self) -> str:
@@ -218,6 +280,15 @@ class Player:
             "injury_days": self.injury_days,
             "service_years": self.service_years,
             "games_by_pos": dict(self.games_by_pos),
+            "post_batting": {k: v.to_list() for k, v in self.post_batting.items()},
+            "post_pitching": {k: v.to_list() for k, v in self.post_pitching.items()},
+            "stints": [dict(x) for x in self.stints],
+            "history": [dict(x) for x in self.history],
+            "injury_total": self.injury_total,
+            "injury_history": [dict(x) for x in self.injury_history],
+            "rehab": self.rehab,
+            "rust_days": self.rust_days,
+            "morale": self.morale,
         }
 
     @classmethod
@@ -248,6 +319,65 @@ class Player:
             injury_days=int(data.get("injury_days", 0)),
             service_years=int(data.get("service_years", 0)),
             games_by_pos={k: int(v) for k, v in data.get("games_by_pos", {}).items()},
+            post_batting={k: BattingStats.from_list(v) for k, v in data.get("post_batting", {}).items()},
+            post_pitching={k: PitchingStats.from_list(v) for k, v in data.get("post_pitching", {}).items()},
+            stints=[dict(x) for x in data.get("stints", [])],
+            history=[dict(x) for x in data.get("history", [])],
+            injury_total=int(data.get("injury_total", 0)),
+            injury_history=[dict(x) for x in data.get("injury_history", [])],
+            rehab=bool(data.get("rehab", False)),
+            rust_days=int(data.get("rust_days", 0)),
+            morale=int(data.get("morale", 50)),
+        )
+
+
+@dataclass(slots=True)
+class RetiredPlayer:
+    """A retired player's permanent record (career history survives retirement)."""
+
+    id: int
+    first_name: str
+    last_name: str
+    position: str
+    age: int  # at retirement
+    retired_year: int
+    last_team: str | None
+    history: list[dict[str, Any]] = field(default_factory=list)
+    draft_year: int | None = None
+    injuries: int = 0  # career injury count
+
+    @property
+    def name(self) -> str:
+        return f"{self.first_name} {self.last_name}"
+
+    @property
+    def is_pitcher(self) -> bool:
+        return self.position in rt.PITCHER_POSITIONS
+
+    @classmethod
+    def from_player(cls, player: Player, year: int) -> RetiredPlayer:
+        return cls(
+            id=player.id, first_name=player.first_name, last_name=player.last_name,
+            position=player.position, age=player.age, retired_year=year, last_team=player.team,
+            history=[dict(x) for x in player.history], draft_year=player.draft_year,
+            injuries=len(player.injury_history),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id, "first_name": self.first_name, "last_name": self.last_name,
+            "position": self.position, "age": self.age, "retired_year": self.retired_year,
+            "last_team": self.last_team, "history": [dict(x) for x in self.history],
+            "draft_year": self.draft_year, "injuries": self.injuries,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RetiredPlayer:
+        return cls(
+            id=int(data["id"]), first_name=data["first_name"], last_name=data["last_name"],
+            position=data["position"], age=int(data["age"]), retired_year=int(data["retired_year"]),
+            last_team=data.get("last_team"), history=[dict(x) for x in data.get("history", [])],
+            draft_year=data.get("draft_year"), injuries=int(data.get("injuries", 0)),
         )
 
 

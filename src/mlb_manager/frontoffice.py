@@ -170,11 +170,14 @@ def sync_injured_list(league: League, team: Team) -> None:
     """CPU-style IL management: IL longer injuries, reinstate healed players."""
     players = league.players
     for pid in list(team.injured_list):
-        if not players[pid].is_injured:
+        player = players[pid]
+        if not player.is_injured:
             team.injured_list.remove(pid)
             team.reserves.append(pid)
+        elif player.injury_days <= injuries.CPU_REHAB_DAYS and player.injury_total >= injuries.REHAB_MIN_INJURY:
+            injuries.start_rehab(team, players, pid)
     for pid in [*team.active, *team.reserves]:
-        if players[pid].injury_days >= injuries.IL_THRESHOLD_DAYS:
+        if players[pid].injury_days >= injuries.IL_THRESHOLD_DAYS and not players[pid].rehab:
             team.remove_player(pid)
             team.injured_list.append(pid)
 
@@ -200,7 +203,7 @@ def optimize_roster(league: League, team: Team, use_performance: bool = False) -
 
     rotation = sorted(pitchers, key=starter_score, reverse=True)[: roster.ROTATION_SIZE]
     relief = sorted(
-        (p for p in pitchers if p not in rotation),
+        (p for p in pitchers if p.id not in {r.id for r in rotation}),
         key=lambda p: (rt.pitching_rating(p.ratings, "RP"), -p.id),
         reverse=True,
     )[: roster.MAX_ACTIVE_PITCHERS - len(rotation)]
@@ -211,7 +214,8 @@ def optimize_roster(league: League, team: Team, use_performance: bool = False) -
         key=lambda p: (p.overall_at("C"), -p.id),
         reverse=True,
     )[:MIN_ORG_CATCHERS]
-    remaining = [h for h in hitters if h not in chosen]
+    chosen_ids = {c.id for c in chosen}
+    remaining = [h for h in hitters if h.id not in chosen_ids]
     for position in roster.AUTO_FILL_ORDER:
         if position == "C" or not remaining:
             continue
@@ -223,8 +227,9 @@ def optimize_roster(league: League, team: Team, use_performance: bool = False) -
         chosen.append(remaining.pop(0))
     active += chosen
 
+    taken = {p.id for p in active}
     leftovers = sorted(
-        (p for p in members if p not in active), key=lambda p: (-p.overall, p.id)
+        (p for p in members if p.id not in taken), key=lambda p: (-p.overall, p.id)
     ) + sorted(hurt, key=lambda p: (p.injury_days, -p.overall, p.id))
     pitcher_count = sum(p.is_pitcher for p in active)
     for p in leftovers:
@@ -385,7 +390,9 @@ def release_player(league: League, team: Team, player_id: int) -> str:
     player = league.players[player_id]
     if player_id not in team.all_players:
         raise roster.RosterError(f"{player.name} is not in your organisation.")
+    league.note_departure(player)
     team.remove_player(player_id)
+    player.rehab = False
     if player.contract_years > 0:
         team.dead_money = round(team.dead_money + player.salary, 2)
     player.team = None

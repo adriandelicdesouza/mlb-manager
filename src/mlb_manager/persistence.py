@@ -12,8 +12,8 @@ from typing import Any
 from mlb_manager import __version__, frontoffice
 from mlb_manager.league import League
 
-SAVE_FORMAT_VERSION = 3
-SUPPORTED_VERSIONS = (1, 2, 3)
+SAVE_FORMAT_VERSION = 4
+SUPPORTED_VERSIONS = (1, 2, 3, 4)
 SAVE_SUFFIX = ".json"
 SAVE_DIR_ENV = "MLB_MANAGER_SAVE_DIR"
 
@@ -90,6 +90,8 @@ def load_league(path: str | os.PathLike[str]) -> League:
         migrate_v1_to_v2(league)
     if version in (1, 2):
         migrate_v2_to_v3(league)
+    if version in (1, 2, 3):
+        migrate_v3_to_v4(league)
     return league
 
 
@@ -119,6 +121,22 @@ def migrate_v2_to_v3(league: League) -> None:
         if player.batting.g and not player.games_by_pos and not player.is_pitcher:
             player.games_by_pos = {player.position: player.batting.g}
     league.add_news("Save upgraded: injuries, in-season development and awards are now active.")
+
+
+def migrate_v3_to_v4(league: League) -> None:
+    """v3 saves predate careers, postseason stats, morale and injury history.
+
+    Career tracking starts with the current season (its live stats count
+    immediately); morale starts neutral and injury histories start empty. A
+    save made mid-postseason has no per-round stats for games already played.
+    Players currently injured get their remaining days as the injury length so
+    rehab and rust rules apply to them.
+    """
+    for player in league.players.values():
+        if player.is_injured and not player.injury_total:
+            player.injury_total = player.injury_days
+    league.add_news("Save upgraded: career and postseason statistics, morale, rehab assignments "
+                    "and franchise records are now tracked.")
 
 
 def list_saves(directory: Path | None = None) -> list[Path]:

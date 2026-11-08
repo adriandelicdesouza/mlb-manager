@@ -11,18 +11,19 @@ import random
 import re
 from collections import defaultdict
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from mlb_manager import awards as awards_mod
-from mlb_manager import contracts, development, freeagency, frontoffice, injuries, seasonlog, trades
+from mlb_manager import careers, contracts, development, freeagency, frontoffice, injuries, morale, seasonlog, trades
 from mlb_manager import draft as draft_mod
+from mlb_manager import ratings as rt
 from mlb_manager import roster
 from mlb_manager.draft import Draft, DraftPick, DraftSelection
 from mlb_manager.franchises import LEAGUES, get_franchise
 from mlb_manager.game import GameResult, simulate_game
 from mlb_manager.generation import PlayerFactory, generate_rosters
-from mlb_manager.models import Player, Team
+from mlb_manager.models import BattingStats, PitchingStats, Player, RetiredPlayer, Team
 from mlb_manager.playoffs import Playoffs, Series, SeriesGame
 from mlb_manager.schedule import ScheduledGame, generate_schedule
 from mlb_manager.standings import TeamRecord, compute_records, playoff_seeds, rank
@@ -55,6 +56,7 @@ MILESTONE_LIMIT = 250
 CPU_ROSTER_REVIEW_DAYS = 14  # CPU promotions/demotions and lineup review
 FRANCHISE_LOG_LIMIT = 400
 MAJOR_CONTRACT_SALARY = 5.0  # $M per year: logged in franchise history
+CAREER_MILESTONE_LIMIT = 400
 
 
 @dataclass(slots=True)
@@ -99,9 +101,13 @@ class League:
     milestone_keys: list[str] = field(default_factory=list)  # dedupe keys, current season
     awards_history: list[dict[str, Any]] = field(default_factory=list)  # {"year", "entries"}
     franchise_log: list[dict[str, Any]] = field(default_factory=list)  # user's major events
+    retired: dict[int, RetiredPlayer] = field(default_factory=dict)  # permanent career records
+    postseason_awards: list[dict[str, Any]] = field(default_factory=list)  # series MVPs, all years
+    career_milestones: list[str] = field(default_factory=list)  # all-time career milestones
     _by_day: dict[int, list[ScheduledGame]] | None = field(default=None, repr=False)
     _pending_news: list[str] = field(default_factory=list, repr=False)
     _injury_teams: set[str] = field(default_factory=set, repr=False)
+    _career_base: dict[int, tuple[BattingStats, PitchingStats]] = field(default_factory=dict, repr=False)
 
     # ------------------------------------------------------------------ creation
 
@@ -156,15 +162,16 @@ class League:
         if len(self.franchise_log) > FRANCHISE_LOG_LIMIT:
             del self.franchise_log[: len(self.franchise_log) - FRANCHISE_LOG_LIMIT]
 
-    def add_milestone(self, key: str, message: str, news: list[str] | None = None) -> None:
+    def add_milestone(self, key: str, message: str, news: list[str] | None = None) -> bool:
         if key in self.milestone_keys:
-            return
+            return False
         self.milestone_keys.append(key)
         self.milestones.append(f"{self.phase_label_short()}: {message}")
         if len(self.milestones) > MILESTONE_LIMIT:
             del self.milestones[: len(self.milestones) - MILESTONE_LIMIT]
         if news is not None:
             news.append(message)
+        return True
 
     def assign_initial_service(self) -> None:
         """Estimate MLB service time for a freshly generated or migrated league."""
@@ -247,7 +254,10 @@ class League:
             for note in notes:
                 self.add_news(note)
 
-    def play_game(self, away: str, home: str, key: str, record_stats: bool) -> GameResult:
+    def play_game(self, away: str, home: str, key: str, record_stats: bool,
+                  round_code: str | None = None) -> GameResult:
+        """Play one game. Regular-season stats are recorded when ``record_stats``;
+        postseason stats go to the round ``round_code`` (never mixed)."""
         away_team, home_team = self.teams[away], self.teams[home]
         self._prepare(away_team)
         self._prepare(home_team)
@@ -256,15 +266,58 @@ class League:
         away_day, _ = injuries.game_day_team(away_team, self.players)
         home_day, _ = injuries.game_day_team(home_team, self.players)
         result = simulate_game(
-            away_day, home_day, self.players, self._rng("game", key), away_starter, home_starter
+            away_day, home_day, self.game_players(away_day, home_day), self._rng("game", key),
+            away_starter, home_starter,
         )
-        self._apply_result(result, record_stats)
+        self._apply_result(result, record_stats, round_code)
         self._apply_injuries(result, key)
         if self.user_team in (away, home):
             self.last_user_game = result
         return result
 
-    def _apply_result(self, result: GameResult, record_stats: bool) -> None:
+    def form_modifier(self, player: Player) -> int:
+        """Rating points added in games today: morale and post-injury rust."""
+        return morale.performance_modifier(player) + injuries.form_modifier(player)
+
+    def game_players(self, *teams: Team) -> dict[int, Player]:
+        """Players as they perform today: copies with form-adjusted ratings.
+
+        The engine reads ratings from this mapping; the stored players are never
+        modified, so form effects are purely game-day.
+        """
+        adjusted: dict[int, Player] = {}
+        for team in teams:
+            for pid in team.active:
+                player = self.players[pid]
+                delta = self.form_modifier(player)
+                if delta:
+                    ratings = {attr: (value if attr == "stamina" else rt.clamp_rating(value + delta))
+                               for attr, value in player.ratings.items()}
+                    adjusted[pid] = replace(player, ratings=ratings)
+        if not adjusted:
+            return self.players
+        view = dict(self.players)
+        view.update(adjusted)
+        return view
+
+    def _career_base_for(self, player: Player) -> tuple[BattingStats, PitchingStats]:
+        base = self._career_base.get(player.id)
+        if base is None:
+            base = careers.archived_totals(player)
+            self._career_base[player.id] = base
+        return base
+
+    def _career_milestones(self, player: Player, batting: BattingStats | None,
+                           pitching: PitchingStats | None) -> None:
+        if not player.history:
+            return  # first season: no career milestone can be reached yet
+        for message in careers.career_milestones(player, self._career_base_for(player), batting, pitching):
+            if self.add_milestone(f"career:{player.id}:{message}", message, self._pending_news):
+                self.career_milestones.append(f"{self.year}: {message}")
+                if len(self.career_milestones) > CAREER_MILESTONE_LIMIT:
+                    del self.career_milestones[: len(self.career_milestones) - CAREER_MILESTONE_LIMIT]
+
+    def _apply_result(self, result: GameResult, record_stats: bool, round_code: str | None = None) -> None:
         for box in (result.away_box, result.home_box):
             for pid, line in box.pitching.items():
                 player = self.players[pid]
@@ -273,24 +326,33 @@ class League:
                     player.pitching.add(line)
                     for message in seasonlog.stat_milestones(player, None, line):
                         self.add_milestone(f"{pid}:{message}", message, self._pending_news)
-            if record_stats:
-                for pid, position in box.batting_order:
-                    player = self.players[pid]
-                    line = box.batting[pid]
+                    self._career_milestones(player, None, line)
+                elif round_code is not None:
+                    careers.add_postseason(player, round_code, None, line)
+            for pid, position in box.batting_order:
+                player = self.players[pid]
+                line = box.batting[pid]
+                if record_stats:
                     player.batting.add(line)
                     player.games_by_pos[position] = player.games_by_pos.get(position, 0) + 1
                     for message in seasonlog.stat_milestones(player, line, None):
                         self.add_milestone(f"{pid}:{message}", message, self._pending_news)
+                    self._career_milestones(player, line, None)
+                elif round_code is not None:
+                    careers.add_postseason(player, round_code, line, None)
         if record_stats:
             for message in seasonlog.no_hitters(result, self.players):
                 self.add_milestone(f"nohit:{self.day}:{message}", message, self._pending_news)
 
+    def _injury_multiplier(self, player: Player) -> float:
+        return injuries.risk_multiplier(player, self.seed, self.year)
+
     def _apply_injuries(self, result: GameResult, key: str) -> None:
         rng = self._rng("injury", key)
         for player, description, days in injuries.injuries_from_game(
-            (result.away_box, result.home_box), self.players, rng
+            (result.away_box, result.home_box), self.players, rng, self._injury_multiplier
         ):
-            injuries.apply_injury(player, description, days)
+            injuries.apply_injury(player, description, days, self.year, self.day)
             if player.team == self.user_team:
                 self._pending_news.append(
                     f"INJURY: {player.name} ({player.position}) - {description}, out ~{days} day(s)."
@@ -305,12 +367,31 @@ class League:
         for player in self.players.values():
             if player.fatigue:
                 player.fatigue = max(0, player.fatigue - DAILY_RECOVERY)
-            if player.injury_days and injuries.heal_one_day(player) and player.team:
+            if not (player.injury_days or player.rust_days):
+                continue
+            was_rehab = player.rehab
+            healed = injuries.heal_one_day(player)
+            if not player.team:
+                continue
+            team = self.teams[player.team]
+            if healed:
                 if player.team == self.user_team:
-                    on_il = player.id in self.user.injured_list
-                    self.add_news(f"{player.name} is healthy again"
-                                  + (" - activate him from the IL (Injuries menu)." if on_il else "."))
-                elif player.id in self.teams[player.team].injured_list:
+                    if was_rehab:
+                        self.add_news(f"{player.name} completed his rehab assignment and is ready "
+                                      "to be activated (Injuries menu).")
+                    else:
+                        on_il = player.id in team.injured_list
+                        rust = f" He will be rusty for ~{player.rust_days} days." if player.rust_days else ""
+                        self.add_news(f"{player.name} is healthy again"
+                                      + (" - activate him from the IL (Injuries menu)." if on_il else ".")
+                                      + rust)
+                elif player.id in team.injured_list or was_rehab:
+                    self._injury_teams.add(player.team)
+            elif player.id in team.injured_list:
+                if player.team == self.user_team and player.injury_days == injuries.REHAB_WINDOW_DAYS \
+                        and player.injury_total >= injuries.REHAB_MIN_INJURY:
+                    self.add_news(f"{player.name} can begin a rehab assignment (Injuries menu).")
+                elif player.team != self.user_team and player.injury_days == injuries.CPU_REHAB_DAYS:
                     self._injury_teams.add(player.team)
 
     # ------------------------------------------------------------------ advancing
@@ -357,10 +438,13 @@ class League:
                 continue
             team = self.teams[abbr]
             before = set(team.injured_list)
+            rehab_before = {pid for pid in team.reserves if self.players[pid].rehab}
             frontoffice.optimize_roster(self, team, use_performance=self.phase == PHASE_REGULAR)
             for pid in sorted(set(team.injured_list) - before):
                 self.log_transaction(f"{abbr} placed {self.players[pid].name} on the injured list "
                                      f"({self.players[pid].injury}).")
+            for pid in sorted(p for p in team.reserves if self.players[p].rehab and p not in rehab_before):
+                self.log_transaction(f"{abbr} sent {self.players[pid].name} on a rehab assignment.")
         self._injury_teams = set()
 
     def _monthly_development(self) -> list[str]:
@@ -400,6 +484,9 @@ class League:
             news.extend(self._monthly_development())
         if self.day == 0 or self.day % 7 != 0:
             return news
+        for player in morale.weekly_update(self):
+            reasons = [r for r, d in morale.factors(self, player) if d < 0]
+            news.append(f"{player.name} is unhappy" + (f" ({reasons[0].lower()})." if reasons else "."))
         frontoffice.update_strategies(self)
         if self.day % CPU_ROSTER_REVIEW_DAYS == 0:
             for team in sorted(self.teams.values(), key=lambda t: t.abbr):
@@ -461,8 +548,9 @@ class League:
         for series in self.playoffs.active_series():
             away, home = series.next_matchup()
             number = len(series.games) + 1
+            code = careers.round_code(series.round_index)
             result = self.play_game(
-                away, home, f"post:{series.series_id}:{number}", record_stats=False
+                away, home, f"post:{series.series_id}:{number}", record_stats=False, round_code=code
             )
             series.record(
                 SeriesGame(away, home, result.away_runs, result.home_runs, result.innings)
@@ -470,6 +558,7 @@ class League:
             report.games.append(PlayedGame(f"{series.round_name} G{number}", result))
             if series.is_over:
                 report.news.append(f"{series.round_name}: {series.summary()}")
+                report.news.extend(self._series_awards(series, code))
         self.day += 1
         if not self.playoffs.active_series():
             if self.playoffs.is_complete:
@@ -481,6 +570,23 @@ class League:
                 )
                 report.news.append(f"{self.playoffs.current_round[0].round_name} set: {names}")
         return report
+
+    def _series_awards(self, series: Series, code: str) -> list[str]:
+        if code not in ("CS", "WS") or series.winner is None:
+            return []
+        mvp = careers.series_mvp(self, series.winner, code)
+        if mvp is None:
+            return []
+        award = "World Series MVP" if code == "WS" else f"{series.league}CS MVP"
+        entry = {"year": self.year, "award": award, "player_id": mvp.id, "name": mvp.name,
+                 "team": series.winner, "line": careers.series_line(mvp, code)}
+        self.postseason_awards.append(entry)
+        if series.winner == self.user_team:
+            self.log_franchise("award", f"{mvp.name} named {award}.")
+        return [f"{award}: {mvp.name} ({series.winner}) - {entry['line']}"]
+
+    def postseason_award_list(self, year: int | None = None) -> list[dict[str, Any]]:
+        return [a for a in self.postseason_awards if year is None or a["year"] == year]
 
     def _finish_season(self) -> list[str]:
         assert self.playoffs is not None
@@ -508,6 +614,9 @@ class League:
                 ],
                 "leaders": self._leader_snapshot(),
                 "milestones": list(self.milestones[-12:]),
+                "series": [f"{s.round_name}: {s.summary()}" for rnd in self.playoffs.rounds for s in rnd],
+                "ws_mvp": next((a["name"] + f" ({a['team']})" for a in self.postseason_award_list(self.year)
+                                if a["award"] == "World Series MVP"), None),
             }
         )
         if champion == self.user_team:
@@ -601,6 +710,10 @@ class League:
         self.pending_draft_order = draft_mod.draft_order(self.teams, best_first, finish)
 
         news: list[str] = [f"The {self.year} offseason begins."]
+        for player in sorted(self.players.values(), key=lambda p: p.id):
+            careers.archive_season(player, self.year)
+        self._career_base = {}
+        morale.offseason_reset(self, self.playoffs.champion if self.playoffs else None)
         rng = self._rng("development")
         user_changes: list[tuple[Player, int]] = []
         for team in self.teams.values():
@@ -645,15 +758,32 @@ class League:
         return news
 
     def _remove_player(self, player_id: int) -> None:
+        """Retire a player: he leaves the league but keeps his career record."""
         player = self.players.pop(player_id)
         if player.team is not None and player_id in self.teams[player.team].all_players:
             self.teams[player.team].remove_player(player_id)
+        self._career_base.pop(player_id, None)
+        if player.history:
+            self.retired[player_id] = RetiredPlayer.from_player(player, self.year)
+
+    def note_departure(self, player: Player) -> None:
+        """Bookkeeping when a player leaves his club (trade, release).
+
+        Before the season is archived, his stats so far are credited to the old
+        club; morale gets a fresh start with a new club.
+        """
+        if not self.in_offseason:
+            careers.close_stint(player)
+        morale.new_club(player)
 
     def pending_free_agents(self, team: Team) -> list[Player]:
         return [self.players[pid] for pid in team.all_players if self.players[pid].contract_years <= 0]
 
     def resign_ask(self, player: Player) -> tuple[float, int]:
-        return contracts.asking_contract(player, self.seed, discount=RESIGN_LOYALTY_DISCOUNT)
+        """Re-signing ask: loyalty discount, adjusted by morale (happy players ask less)."""
+        return contracts.asking_contract(
+            player, self.seed, discount=RESIGN_LOYALTY_DISCOUNT * morale.contract_multiplier(player)
+        )
 
     def extend_contract(self, team: Team, player_id: int, years: int) -> str:
         """Re-sign a pending free agent (offseason) or extend a player in his final year.
@@ -665,6 +795,10 @@ class League:
             raise contracts_error(f"Player #{player_id} is not in your organisation.")
         if not 1 <= years <= contracts.max_years(player):
             raise contracts_error(f"{player.name} will sign for 1-{contracts.max_years(player)} years.")
+        if morale.refuses_extension(player):
+            raise contracts_error(
+                f"{player.name} is unhappy ({morale.label(player.morale).lower()}) and refuses to negotiate."
+            )
         salary, _ = self.resign_ask(player)
         if player.contract_years <= 0:
             if self.phase != PHASE_RESIGN:
@@ -712,7 +846,7 @@ class League:
                 salary, years = self.resign_ask(player)
                 wanted = player.overall >= 55 or (player.age <= 26 and player.potential >= 62)
                 fits = contracts.payroll(team, self.players) + salary <= self.salary_cap - 2
-                if wanted and fits and player.age <= 36:
+                if wanted and fits and player.age <= 36 and not morale.refuses_extension(player):
                     contracts.sign(player, team.abbr, salary, years)
                     self.log_transaction(f"{team.abbr} re-signed {player.name} ({years} yr, {contracts.money(salary)}/yr).")
         for team in self.teams.values():
@@ -739,6 +873,7 @@ class League:
         return news
 
     def _remove_from_org(self, team: Team, player: Player) -> None:
+        self.note_departure(player)
         if player.id in team.all_players:
             team.remove_player(player.id)
         player.team = None
@@ -846,7 +981,7 @@ class League:
         pool = freeagency.free_agents(self)
         for index, player in enumerate(pool):
             if index >= FREE_AGENT_POOL_LIMIT or development.should_retire(player, rng):
-                self.players.pop(player.id, None)
+                self._remove_player(player.id)
 
     def _start_new_season(self) -> None:
         self.year += 1
@@ -887,10 +1022,17 @@ class League:
         roster.repair(team, self.players)
         return message
 
+    def start_rehab(self, team: Team, player_id: int) -> str:
+        message = injuries.start_rehab(team, self.players, player_id)
+        self.log_transaction(f"{team.abbr}: {message}")
+        return message
+
     def injured_players(self, team: Team) -> list[Player]:
+        """Injured players, IL players, rehab assignments and rusty active players."""
         return sorted(
             (self.players[pid] for pid in team.all_players
-             if self.players[pid].is_injured or pid in team.injured_list),
+             if self.players[pid].is_injured or pid in team.injured_list or self.players[pid].rehab
+             or (self.players[pid].rust_days and pid in team.active)),
             key=lambda p: (-p.injury_days, p.id),
         )
 
@@ -974,6 +1116,9 @@ class League:
             "milestone_keys": list(self.milestone_keys),
             "awards_history": list(self.awards_history),
             "franchise_log": list(self.franchise_log),
+            "retired": [r.to_dict() for r in self.retired.values()],
+            "postseason_awards": list(self.postseason_awards),
+            "career_milestones": list(self.career_milestones),
         }
 
     @classmethod
@@ -1007,6 +1152,9 @@ class League:
             milestone_keys=list(data.get("milestone_keys", [])),
             awards_history=list(data.get("awards_history", [])),
             franchise_log=list(data.get("franchise_log", [])),
+            retired={int(r["id"]): RetiredPlayer.from_dict(r) for r in data.get("retired", [])},
+            postseason_awards=list(data.get("postseason_awards", [])),
+            career_milestones=list(data.get("career_milestones", [])),
         )
 
 

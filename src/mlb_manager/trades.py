@@ -307,8 +307,10 @@ def execute(league: League, prop: TradeProposal) -> list[str]:
         give, take = league.teams[giver], league.teams[receiver]
         pids, picks = prop.assets_of(giver)
         for pid in pids:
-            give.remove_player(pid)
             player = league.players[pid]
+            league.note_departure(player)
+            give.remove_player(pid)
+            player.rehab = False
             if player.injury_days >= IL_THRESHOLD_DAYS:
                 take.injured_list.append(pid)
             else:

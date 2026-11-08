@@ -299,6 +299,8 @@ def promote(team: Team, players: Players, player_id: int) -> None:
     """Move a reserve to an open active-roster spot."""
     if player_id not in team.reserves:
         raise RosterError(f"Player #{player_id} is not in your minor league system.")
+    if players[player_id].rehab:
+        raise RosterError(f"{players[player_id].name} is on a rehab assignment until he is healthy.")
     if len(team.active) >= MAX_ACTIVE:
         raise RosterError(f"Active roster is full ({MAX_ACTIVE}). Demote or swap someone instead.")
     if players[player_id].is_pitcher and len(active_pitchers(team, players)) >= MAX_ACTIVE_PITCHERS:
