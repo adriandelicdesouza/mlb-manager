@@ -1,6 +1,6 @@
 import unittest
 
-from mlb_manager import contracts, development, freeagency, frontoffice, roster
+from mlb_manager import contracts, development, finance, freeagency, frontoffice, roster
 from mlb_manager.draft import DRAFT_ROUNDS, FUTURE_DRAFT_YEARS
 from mlb_manager.league import (
     PHASE_DRAFT,
@@ -52,7 +52,8 @@ class OffseasonFlowTests(unittest.TestCase):
         fa = freeagency.free_agents(lg)[0]
         salary, years = freeagency.asking(lg, fa)
         self.assertGreaterEqual(years, 1)
-        if contracts.cap_space(team, lg.players, lg.salary_cap) >= salary and len(team.all_players) < frontoffice.MAX_ORG:
+        if finance.check_transaction(lg, team, finance.KIND_FREE_AGENT, salary, salary=salary).allowed \
+                and len(team.all_players) < frontoffice.MAX_ORG:
             freeagency.sign_free_agent(lg, team, fa.id, salary, years)
             self.assertEqual(fa.team, "CLE")
 
@@ -123,8 +124,8 @@ class MultiSeasonTests(unittest.TestCase):
                 p = lg.players[pid]
                 self.assertEqual(p.team, team.abbr)
                 self.assertGreaterEqual(p.contract_years, 1)
-            if team.abbr != lg.user_team:
-                self.assertLessEqual(contracts.payroll(team, lg.players), lg.salary_cap + 1e-6)
+            if team.abbr != lg.user_team:  # CPU clubs stay within their owners' budget (plus mandatory signings)
+                self.assertLessEqual(finance.payroll(lg, team), finance.payroll_budget(lg, team) * 1.3 + 15)
         self.assertEqual(len(lg.draft_picks), 30 * DRAFT_ROUNDS * FUTURE_DRAFT_YEARS)
 
     def test_drafted_players_join_organisations(self) -> None:

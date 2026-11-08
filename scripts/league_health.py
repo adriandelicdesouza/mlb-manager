@@ -8,7 +8,7 @@ import statistics
 import sys
 import time
 
-from mlb_manager import contracts, roster
+from mlb_manager import contracts, finance, roster
 from mlb_manager.league import League
 
 
@@ -35,6 +35,11 @@ def main() -> None:
             f"injuries {injuries} morale {statistics.mean(moods):.0f} (<30: {sum(m < 30 for m in moods)}) "
             f"retired {len(lg.retired)} save {save_mb:.1f}MB ({time.time() - start:.1f}s)"
         )
+        rows = [r for r in lg.finance.state.ledger if r["year"] == lg.year]
+        payors = sorted((r["team"], round(r["cbt_tax"], 1), r["cbt_offence"]) for r in rows if r["cbt_tax"] > 0)
+        top = sorted(rows, key=lambda r: -r["payroll"])[:3]
+        print(f"     CBT payors {payors}  top payrolls {[(r['team'], round(r['payroll'])) for r in top]}  "
+              f"rules {finance.rules(lg, lg.year).cbt_threshold:.0f}M threshold")
         for team in lg.teams.values():
             problems = roster.validate(team, lg.players)
             assert not problems, (team.abbr, problems)

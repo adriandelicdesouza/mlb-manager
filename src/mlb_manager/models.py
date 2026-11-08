@@ -169,6 +169,8 @@ class Player:
     salary: float = 0.0  # annual salary in $ millions
     contract_years: int = 0  # seasons remaining, including the current one
     contract_length: int = 0  # length of the contract when signed
+    contract_aav: float = 0.0  # average annual value (0 = same as salary; CBT measure)
+    contract_raise: float = 0.0  # yearly cash step as a share of AAV (back-loaded deals)
     draft_year: int | None = None
     draft_round: int | None = None
     draft_pick: int | None = None
@@ -273,6 +275,8 @@ class Player:
             "salary": self.salary,
             "contract_years": self.contract_years,
             "contract_length": self.contract_length,
+            "contract_aav": self.contract_aav,
+            "contract_raise": self.contract_raise,
             "draft_year": self.draft_year,
             "draft_round": self.draft_round,
             "draft_pick": self.draft_pick,
@@ -312,6 +316,8 @@ class Player:
             salary=float(data.get("salary", 0.0)),
             contract_years=int(data.get("contract_years", 0)),
             contract_length=int(data.get("contract_length", 0)),
+            contract_aav=float(data.get("contract_aav", 0.0)),
+            contract_raise=float(data.get("contract_raise", 0.0)),
             draft_year=data.get("draft_year"),
             draft_round=data.get("draft_round"),
             draft_pick=data.get("draft_pick"),

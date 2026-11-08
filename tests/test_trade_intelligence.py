@@ -56,7 +56,7 @@ class ValuationTests(unittest.TestCase):
                 key=lambda x: x.overall)
         p.salary, p.contract_years = contracts.MIN_SALARY, 3
         cheap = _value(lg, p, self.rebuilder).total
-        p.salary = 30.0
+        p.salary = 30.0 * contracts.MARKET_SCALE
         expensive = _value(lg, p, self.rebuilder)
         self.assertGreater(cheap, expensive.total + 20)
         self.assertLess(expensive.contract, -50)
@@ -119,7 +119,9 @@ class NegotiationTests(unittest.TestCase):
     def test_salary_dump_onto_cpu_rejected(self) -> None:
         lg = self.lg
         dump = max(trades.tradable_players(lg, lg.user), key=lambda p: p.salary - contracts.market_salary(p))
-        dump.salary, dump.contract_years = 25.0, 4
+        # A clear overpay: well above both the old $25M dump and his market value.
+        dump.salary = max(25.0 * contracts.MARKET_SCALE, contracts.market_salary(dump) * 2.5, dump.salary * 1.5)
+        dump.contract_aav, dump.contract_years = dump.salary, 4
         fringe = _by_value(lg, self.bos, reverse=False)[0]
         prop = TradeProposal("NYY", "BOS", a_players=[dump.id], b_players=[fringe.id])
         verdict = trades.evaluate(lg, prop)
@@ -131,7 +133,7 @@ class NegotiationTests(unittest.TestCase):
         team = self.bos
         team.strategy = "rebuilding"
         vet = max((p for p in trades.tradable_players(lg, team) if p.age >= 29), key=lambda p: p.overall)
-        vet.salary, vet.contract_years = 18.0, 1
+        vet.salary, vet.contract_years = 18.0 * contracts.MARKET_SCALE, 1
         junk = [p.id for p in _by_value(lg, lg.user, reverse=False)[:2]]
         prop = TradeProposal("NYY", "BOS", a_players=junk, b_players=[vet.id])
         if trades.validate(lg, prop):

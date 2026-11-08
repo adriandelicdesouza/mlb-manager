@@ -12,7 +12,7 @@ import random
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
-from mlb_manager import contracts, development, injuries, roster
+from mlb_manager import contracts, development, finance, injuries, roster
 from mlb_manager import ratings as rt
 from mlb_manager.draft import FUTURE_DRAFT_YEARS, DraftPick, create_picks
 from mlb_manager.generation import PlayerFactory
@@ -328,7 +328,9 @@ def fill_minimums(league: League, team: Team, force: str | None = None) -> list[
             player.potential = player.overall
             league.players[player.id] = player
             league.next_player_id = factory.next_id
-        contracts.sign(player, team.abbr, contracts.MIN_SALARY, 1)
+        minimum = finance.min_salary(league)
+        finance.check_transaction(league, team, finance.KIND_MINIMUM, minimum, salary=minimum)  # never blocks
+        contracts.sign(player, team.abbr, minimum, 1, minimum)
         team.reserves.append(player.id)
         notes.append(f"{team.abbr} signed {player.name} ({player.position}) for organisational depth.")
         league.log_transaction(notes[-1])
@@ -381,38 +383,22 @@ def initialize(league: League) -> None:
             player.potential = development.initial_potential(rng, player.overall, player.age)
             player.development = development.random_development(rng)
         if player.team is not None and player.contract_years <= 0 and player.salary <= 0:
+            minimum = finance.min_salary(league)
             if player.age <= 25:
-                salary = contracts.MIN_SALARY
+                salary = minimum
                 years = rng.randint(2, min(6, max(2, 31 - player.age)))
             else:
-                salary = contracts.market_salary(player) * rng.uniform(0.8, 1.2)
+                salary = contracts.market_salary(player, minimum) * rng.uniform(0.8, 1.2)
                 years = rng.randint(1, contracts.preferred_years(player) + 1)
                 years = min(years, contracts.max_years(player))
-            contracts.sign(player, player.team, salary, years)
+            contracts.sign(player, player.team, salary, years, minimum, structure=False)
             player.contract_length = years + rng.randint(0, 2)
-    for team in league.teams.values():
-        _fit_under_cap(league, team)
     if not any(p.team is None for p in league.players.values()):
         _seed_free_agents(league)
     if not league.draft_picks:
         for year in range(league.draft_year, league.draft_year + FUTURE_DRAFT_YEARS):
             league.draft_picks.extend(create_picks(list(league.teams), year))
     update_strategies(league)
-
-
-def _fit_under_cap(league: League, team: Team) -> None:
-    target = league.salary_cap * 0.97
-    total = contracts.payroll(team, league.players)
-    if total <= target:
-        return
-    big = [league.players[pid] for pid in team.all_players if league.players[pid].salary > contracts.MIN_SALARY]
-    big_total = sum(p.salary for p in big)
-    excess = total - target
-    if big_total <= 0:
-        return
-    scale = max(0.1, (big_total - excess) / big_total)
-    for p in big:
-        p.salary = contracts.round_salary(p.salary * scale)
 
 
 INITIAL_FREE_AGENTS = 60

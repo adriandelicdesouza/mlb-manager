@@ -15,7 +15,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from mlb_manager import awards as awards_mod
-from mlb_manager import careers, contracts, development, freeagency, frontoffice, injuries, morale, seasonlog, trades
+from mlb_manager import careers, contracts, development, finance, freeagency, frontoffice, injuries, morale, seasonlog, trades
 from mlb_manager.dugout import LiveGame
 from mlb_manager import draft as draft_mod
 from mlb_manager import ratings as rt
@@ -56,7 +56,7 @@ RESIGN_LOYALTY_DISCOUNT = 0.95
 MILESTONE_LIMIT = 250
 CPU_ROSTER_REVIEW_DAYS = 14  # CPU promotions/demotions and lineup review
 FRANCHISE_LOG_LIMIT = 400
-MAJOR_CONTRACT_SALARY = 5.0  # $M per year: logged in franchise history
+MAJOR_CONTRACT_SALARY = 10.0  # $M per year: logged in franchise history
 CAREER_MILESTONE_LIMIT = 400
 
 
@@ -103,7 +103,7 @@ class League:
     news: list[str] = field(default_factory=list)
     history: list[dict[str, Any]] = field(default_factory=list)
     last_user_game: GameResult | None = None
-    salary_cap: float = contracts.DEFAULT_SALARY_CAP
+    finance: finance.LeagueFinance = field(default_factory=finance.LeagueFinance)  # rules + money state
     draft_picks: list[DraftPick] = field(default_factory=list)
     draft: Draft | None = None
     pending_draft_order: list[str] = field(default_factory=list)
@@ -129,9 +129,21 @@ class League:
 
     @classmethod
     def create(
-        cls, seed: int, user_team: str, year: int = DEFAULT_YEAR, salary_cap: float | None = None
+        cls, seed: int, user_team: str, year: int = DEFAULT_YEAR, salary_cap: float | None = None,
+        finance_config: finance.FinanceConfig | None = None,
     ) -> League:
+        """Generate a new league.
+
+        Financial rules default to the standard MLB rules of ``year``;
+        ``salary_cap`` is a shortcut for custom rules with that hard cap.
+        """
         user_team = get_franchise(user_team).abbr
+        errors = finance.validate_season(year)
+        if errors:
+            raise ValueError(errors[0])
+        if finance_config is None:
+            finance_config = (finance.hard_cap_config(year, salary_cap) if salary_cap is not None
+                              else finance.new_config(year))
         teams, players, next_id = generate_rosters(seed)
         league = cls(
             seed=seed,
@@ -141,10 +153,12 @@ class League:
             players=players,
             schedule=generate_schedule(f"{seed}:{year}"),
             next_player_id=next_id,
-            salary_cap=salary_cap if salary_cap is not None else contracts.DEFAULT_SALARY_CAP,
+            finance=finance.LeagueFinance(finance_config),
         )
         frontoffice.initialize(league)
+        finance.fit_initial_payrolls(league)
         league.assign_initial_service()
+        finance.start_season(league)
         league.add_news(f"Welcome to the {year} season, {teams[user_team].full_name}!")
         return league
 
@@ -515,6 +529,7 @@ class League:
             g.save_pitcher = result.save_pitcher
             report.games.append(PlayedGame("Regular season", result))
         report.news.extend(self._front_office_day())
+        finance.accrue_day(self)
         self.day += 1
         if self.day > self.last_regular_day:
             report.news.extend(self._start_postseason())
@@ -714,7 +729,14 @@ class League:
             self.log_franchise("championship", f"Won the {self.year} World Series!")
         elif result != "Missed playoffs":
             self.log_franchise("postseason", f"{result} in the {self.year} postseason.")
-        return [f"The {self.teams[champion].full_name} win the {self.year} World Series!"]
+        rounds: dict[str, int] = defaultdict(int)
+        for rnd in self.playoffs.rounds:
+            for s in rnd:
+                rounds[s.high] += 1
+                rounds[s.low] += 1
+        news = [f"The {self.teams[champion].full_name} win the {self.year} World Series!"]
+        news.extend(finance.settle_season(self, dict(rounds)))
+        return news
 
     def _leader_snapshot(self) -> dict[str, str]:
         out: dict[str, str] = {}
@@ -818,7 +840,7 @@ class League:
             player.fatigue = 0
             delta = development.develop(player, rng)
             if player.team is not None:
-                player.contract_years = max(0, player.contract_years - 1)
+                contracts.advance_contract_year(player)
             if player.team == self.user_team and abs(delta) >= 3:
                 user_changes.append((player, delta))
         for player, delta in sorted(user_changes, key=lambda x: -abs(x[1]))[:6]:
@@ -870,11 +892,26 @@ class League:
     def pending_free_agents(self, team: Team) -> list[Player]:
         return [self.players[pid] for pid in team.all_players if self.players[pid].contract_years <= 0]
 
-    def resign_ask(self, player: Player) -> tuple[float, int]:
-        """Re-signing ask: loyalty discount, adjusted by morale (happy players ask less)."""
+    def resign_ask(self, player: Player, years: int | None = None) -> tuple[float, int]:
+        """Re-signing ask: loyalty discount, adjusted by morale (happy players ask less).
+
+        Pending free agents short of six service years are under club control:
+        their one-year terms are an arbitration (or pre-arbitration) salary.
+        """
+        minimum = finance.min_salary(self)
+        if contracts.arbitration_eligible(player) and years in (None, 1):
+            return contracts.arbitration_salary(player, minimum), 1
         return contracts.asking_contract(
-            player, self.seed, discount=RESIGN_LOYALTY_DISCOUNT * morale.contract_multiplier(player)
+            player, self.seed, discount=RESIGN_LOYALTY_DISCOUNT * morale.contract_multiplier(player),
+            minimum=minimum,
         )
+
+    def contract_check(self, team: Team, kind: str, added: float, salary: float = 0.0) -> finance.TransactionCheck:
+        """Apply the league's financial rules to a contract move (raises ContractError if illegal)."""
+        check = finance.check_transaction(self, team, kind, added, salary=salary)
+        if not check.allowed:
+            raise contracts_error(check.reason)
+        return check
 
     def extend_contract(self, team: Team, player_id: int, years: int) -> str:
         """Re-sign a pending free agent (offseason) or extend a player in his final year.
@@ -886,18 +923,25 @@ class League:
             raise contracts_error(f"Player #{player_id} is not in your organisation.")
         if not 1 <= years <= contracts.max_years(player):
             raise contracts_error(f"{player.name} will sign for 1-{contracts.max_years(player)} years.")
-        if morale.refuses_extension(player):
+        arbitration = contracts.arbitration_eligible(player) and years == 1
+        if morale.refuses_extension(player) and not arbitration:
             raise contracts_error(
                 f"{player.name} is unhappy ({morale.label(player.morale).lower()}) and refuses to negotiate."
             )
-        salary, _ = self.resign_ask(player)
+        salary, _ = self.resign_ask(player, years)
+        minimum = finance.min_salary(self)
         if player.contract_years <= 0:
             if self.phase != PHASE_RESIGN:
                 raise contracts_error("Pending free agents can only be re-signed in the re-signing period.")
-            contracts.sign(player, team.abbr, salary, years)
-            verb = "re-signed"
+            kind = finance.KIND_ARBITRATION if arbitration else finance.KIND_RESIGN
+            added = contracts.first_year_salary(salary, years)
+            check = self.contract_check(team, kind, added, salary)
+            contracts.sign(player, team.abbr, salary, years, minimum)
+            verb = "agreed to an arbitration contract with" if arbitration else "re-signed"
         elif player.contract_years == 1:
-            contracts.sign(player, team.abbr, salary, years + 1)
+            added = contracts.first_year_salary(salary, years + 1) - player.salary
+            check = self.contract_check(team, finance.KIND_EXTENSION, added, salary)
+            contracts.sign(player, team.abbr, salary, years + 1, minimum)
             verb = "extended"
         else:
             raise contracts_error(
@@ -905,6 +949,9 @@ class League:
             )
         note = f"{team.abbr} {verb} {player.name} ({years} yr, {contracts.money(salary)}/yr)."
         self.log_transaction(note)
+        if team.abbr == self.user_team:
+            for warning in check.warnings:
+                self.add_news(warning)
         return note
 
     def release(self, team: Team, player_id: int) -> str:
@@ -935,11 +982,18 @@ class League:
                 continue
             for player in sorted(self.pending_free_agents(team), key=lambda p: -p.overall):
                 salary, years = self.resign_ask(player)
+                arbitration = contracts.arbitration_eligible(player) and years == 1
                 wanted = player.overall >= 55 or (player.age <= 26 and player.potential >= 62)
-                fits = contracts.payroll(team, self.players) + salary <= self.salary_cap - 2
-                if wanted and fits and player.age <= 36 and not morale.refuses_extension(player):
-                    contracts.sign(player, team.abbr, salary, years)
-                    self.log_transaction(f"{team.abbr} re-signed {player.name} ({years} yr, {contracts.money(salary)}/yr).")
+                if arbitration:
+                    wanted = wanted or (player.overall >= 50 and salary <= finance.min_salary(self) * 3)
+                kind = finance.KIND_ARBITRATION if arbitration else finance.KIND_RESIGN
+                added = contracts.first_year_salary(salary, years)
+                if not wanted or player.age > 36 or (morale.refuses_extension(player) and not arbitration):
+                    continue
+                if finance.cpu_can_add(self, team, kind, added, salary=salary):
+                    contracts.sign(player, team.abbr, salary, years, finance.min_salary(self))
+                    verb = "tendered" if arbitration else "re-signed"
+                    self.log_transaction(f"{team.abbr} {verb} {player.name} ({years} yr, {contracts.money(salary)}/yr).")
         for team in self.teams.values():
             for player in self.pending_free_agents(team):
                 if team.abbr == self.user_team or player.overall >= 62:
@@ -954,9 +1008,16 @@ class League:
         self.next_player_id = factory.next_id
         for prospect in prospects:
             self.players[prospect.id] = prospect
-        self.draft = Draft(self.draft_year, list(self.pending_draft_order), [p.id for p in prospects])
+        penalised = self.finance.state.draft_penalties.pop(self.draft_year, [])
+        self.draft = Draft(self.draft_year, list(self.pending_draft_order), [p.id for p in prospects],
+                           first_round=finance.penalised_first_round(list(self.pending_draft_order), penalised))
+        moved = [a for a in penalised if self.draft.first_round and
+                 self.draft.first_round.index(a) > self.draft.order.index(a)]
+        if moved:
+            news.append("CBT draft penalty: " + ", ".join(moved) + " first-round pick(s) move back 10 places.")
         self.phase = PHASE_DRAFT
-        mine = [i + 1 for i, abbr in enumerate(self.draft.order) if self.draft_owner(1, abbr) == self.user_team]
+        mine = [i + 1 for i, abbr in enumerate(self.draft.first_round or self.draft.order)
+                if self.draft_owner(1, abbr) == self.user_team]
         news.append(
             f"The {self.draft_year} draft class is ready ({len(prospects)} prospects). "
             + (f"Your first-round pick: #{mine[0]}." if mine else "You have no first-round pick.")
@@ -995,7 +1056,13 @@ class League:
         _, original = self.draft.current_slot()  # type: ignore[misc]
         player = self.players[player_id]
         self.draft.pool.remove(player_id)
-        contracts.sign(player, owner, contracts.rookie_salary(rnd), contracts.ROOKIE_CONTRACT_YEARS)
+        minimum = finance.min_salary(self)
+        rookie = contracts.rookie_salary(rnd, minimum)
+        check = finance.check_transaction(self, self.teams[owner], finance.KIND_DRAFT, rookie, salary=rookie)
+        contracts.sign(player, owner, rookie, contracts.ROOKIE_CONTRACT_YEARS, minimum, structure=False)
+        if owner == self.user_team:
+            for warning in check.warnings:
+                self.add_news(warning)
         player.draft_year, player.draft_round, player.draft_pick = self.draft.year, rnd, number
         self.teams[owner].reserves.append(player_id)
         pick = draft_mod.find_pick(self.draft_picks, self.draft.year, rnd, original)
@@ -1094,6 +1161,8 @@ class League:
         self.trade_offers = []
         self.milestones = []
         self.milestone_keys = []
+        for note in finance.start_season(self):
+            self.add_news(note)
         frontoffice.update_strategies(self)
 
     # -- injuries ----------------------------------------------------------------------
@@ -1196,7 +1265,7 @@ class League:
             "news": list(self.news),
             "history": list(self.history),
             "last_user_game": self.last_user_game.to_dict() if self.last_user_game else None,
-            "salary_cap": self.salary_cap,
+            "finance": self.finance.to_dict(),
             "draft_picks": [p.to_dict() for p in self.draft_picks],
             "draft": self.draft.to_dict() if self.draft else None,
             "pending_draft_order": list(self.pending_draft_order),
@@ -1235,7 +1304,8 @@ class League:
             last_user_game=(
                 GameResult.from_dict(data["last_user_game"]) if data.get("last_user_game") else None
             ),
-            salary_cap=float(data.get("salary_cap", contracts.DEFAULT_SALARY_CAP)),
+            finance=(finance.LeagueFinance.from_dict(data["finance"]) if data.get("finance")
+                     else finance.legacy_finance(data)),
             draft_picks=[DraftPick.from_dict(p) for p in data.get("draft_picks", [])],
             draft=Draft.from_dict(data["draft"]) if data.get("draft") else None,
             pending_draft_order=list(data.get("pending_draft_order", [])),

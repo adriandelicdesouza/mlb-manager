@@ -12,8 +12,10 @@ productive years:
     information) and age veterans downward; the current season blends in
     actual performance.
 ``cost_t``
-    His salary while under contract, weighted by how much cap room means to
-    the club in that season.
+    His cash salary while under contract, weighted by how much budget room
+    means to the club in that season. Salaries enter the model divided by
+    ``contracts.MARKET_SCALE`` so value units stay comparable across the
+    v0.9 move to MLB-level pay (all tolerances are in value units).
 
 The total is split into four transparent components:
 
@@ -34,7 +36,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from mlb_manager import contracts, development, injuries
+from mlb_manager import contracts, development, finance, injuries
 from mlb_manager import ratings as rt
 from mlb_manager.draft import DraftPick
 from mlb_manager.models import Player, Team
@@ -168,7 +170,7 @@ class TeamOutlook:
         self.starting_pitchers = sum(p.position == "SP" for p in org)
         self.org_size = len(team.all_players)
         self.commitments = contracts.commitments(team, players, seasons=HORIZON)
-        self.cap = league.salary_cap
+        self.limit = finance.payroll_budget(league, team)  # owners' payroll + tax budget (rules-aware)
         picks_next = [p for p in league.draft_picks if p.owner == team.abbr and p.year == league.draft_year]
         self.pick_inventory = len(picks_next)
         self._depth_cache: dict[str, list[tuple[float, int]]] = {}
@@ -176,7 +178,7 @@ class TeamOutlook:
     def cap_weight(self, season: int) -> float:
         """How much a salary dollar hurts in ``season`` (0 = now)."""
         committed = self.commitments[min(season, len(self.commitments) - 1)]
-        space = self.cap - committed
+        space = (self.limit - committed) / contracts.MARKET_SCALE
         if space < 5:
             weight = 1.15
         elif space < 15:
@@ -244,9 +246,11 @@ class Valuator:
         ratings = project(player, potential)
         share = self.season_share()
         if player.team is None:  # free agent: value him on his asking contract
-            salary, control = contracts.asking_contract(player, lg.seed)
+            salary, control = contracts.asking_contract(player, lg.seed, minimum=finance.min_salary(lg))
+            cash = contracts.cash_schedule(salary, control, contracts.escalation_for(control))
         else:
-            salary, control = player.salary, max(1, player.contract_years)
+            control = max(1, player.contract_years)
+            cash = [contracts.salary_in(player, t) for t in range(control)]
         durability = injuries.durability(player, lg.seed)
         health = {"durable": 1.03, "normal": 1.0, "injury-prone": 0.92}[durability]
         health *= 1 - 0.04 * min(3, injuries.recent_serious_injuries(player, lg.year))
@@ -271,7 +275,7 @@ class Valuator:
                 worth *= availability
             if t < control:
                 base = worth * disc
-                cost = salary * (share if t == 0 else 1.0) * out.cap_weight(t) * disc
+                cost = cash[t] / contracts.MARKET_SCALE * (share if t == 0 else 1.0) * out.cap_weight(t) * disc
                 value.contract -= cost
             else:
                 young = player.age + control <= 25
@@ -348,7 +352,8 @@ class Valuator:
         out = self.outlook(team)
         draft = lg.draft
         if draft is not None and draft.year == pick.year and pick.original in draft.order:
-            slot = draft.order.index(pick.original)
+            order = draft.first_round if pick.round == 1 and draft.first_round else draft.order
+            slot = order.index(pick.original)
         else:
             slot = self.ranks()[pick.original]
         slot_factor = 1.45 - 0.75 * slot / max(1, len(lg.teams) - 1)

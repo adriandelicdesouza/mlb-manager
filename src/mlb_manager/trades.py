@@ -27,7 +27,7 @@ import random
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from mlb_manager import contracts, frontoffice
+from mlb_manager import contracts, finance, frontoffice
 from mlb_manager.draft import DraftPick
 from mlb_manager.injuries import IL_THRESHOLD_DAYS
 from mlb_manager.models import Player, Team
@@ -277,16 +277,27 @@ def validate(league: League, prop: TradeProposal) -> list[str]:
         hitters = len(remaining) + len(incoming) - pitchers
         if pitchers < MIN_ORG_AFTER_TRADE or hitters < MIN_ORG_AFTER_TRADE:
             errors.append(f"{abbr} would be left without enough pitchers or position players.")
-        before = contracts.payroll(team, league.players)
-        after = before - sum(league.players[p].salary for p in out_ids) + sum(
-            league.players[p].salary for p in in_ids
-        )
-        if not contracts.fits_under_cap(before, after, league.salary_cap):
-            errors.append(
-                f"{abbr} would be over the salary cap ({contracts.money(after)} > "
-                f"{contracts.money(league.salary_cap)})."
-            )
+        check = financial_check(league, prop, abbr)
+        if not check.allowed:
+            errors.append(check.reason)
     return errors
+
+
+def salary_flow(league: League, prop: TradeProposal, abbr: str) -> tuple[float, float, float, float]:
+    """``(outgoing cash, incoming cash, outgoing AAV, incoming AAV)`` for ``abbr`` this season."""
+    other = prop.team_b if abbr == prop.team_a else prop.team_a
+    out_ids, _ = prop.assets_of(abbr)
+    in_ids, _ = prop.assets_of(other)
+    players = league.players
+    return (sum(players[p].salary for p in out_ids), sum(players[p].salary for p in in_ids),
+            sum(contracts.aav(players[p]) for p in out_ids), sum(contracts.aav(players[p]) for p in in_ids))
+
+
+def financial_check(league: League, prop: TradeProposal, abbr: str) -> finance.TransactionCheck:
+    """The league's financial rules (cap, exceptions, CBT) applied to one side of a trade."""
+    out_cash, in_cash, out_aav, in_aav = salary_flow(league, prop, abbr)
+    return finance.check_transaction(league, league.teams[abbr], finance.KIND_TRADE, round(in_cash - out_cash, 4),
+                                     outgoing=out_cash, incoming=in_cash, aav_added=round(in_aav - out_aav, 4))
 
 
 def depth_problem(league: League, team: Team, out_ids: list[int], in_ids: list[int]) -> str | None:
@@ -384,6 +395,11 @@ def evaluate(league: League, prop: TradeProposal, evaluator: str | None = None,
         if problem:
             return TradeEvaluation(False, value_in, value_out, f'{evaluator}: "{problem}"',
                                    UNACCEPTABLE, required, ["depth"], side)
+        out_cash, in_cash, _, _ = salary_flow(league, prop, evaluator)
+        if not finance.fits_budget(league, team, round(in_cash - out_cash, 4), finance.KIND_TRADE):
+            return TradeEvaluation(False, value_in, value_out,
+                                   f'{evaluator}: "That much salary doesn\'t fit our budget."',
+                                   UNACCEPTABLE, required, ["budget"], side)
     talent_needed = tolerance.talent_floor * outgoing.asset if outgoing.asset >= 5 else 0.0
     if value_in >= required and incoming.asset >= talent_needed:
         return TradeEvaluation(True, value_in, value_out, f"{evaluator} accepts the trade.",
@@ -436,6 +452,7 @@ REASON_TEXT: dict[str, str] = {
     "consolidation": "Several lesser pieces don't add up to their best player.",
     "depth": "They won't strip their depth at a key position.",
     "talent": "Salary relief alone isn't enough; they want a real prospect or player back.",
+    "budget": "Taking on that payroll (and any luxury tax) is beyond their owners' budget.",
 }
 
 
@@ -619,10 +636,13 @@ class ContractImpact:
     team: str
     payroll_before: float
     payroll_after: float
-    cap_space_after: float
+    cap_space_after: float | None  # None when the league has no salary cap
     future_change: list[float]  # change in committed salary for the next seasons
     years_in: int  # player-seasons of contract received
     years_out: int
+    tax_before: float = 0.0  # projected Competitive Balance Tax
+    tax_after: float = 0.0
+    messages: list[str] = field(default_factory=list)  # rule violations and consequences
 
     @property
     def change(self) -> float:
@@ -640,13 +660,21 @@ def contract_impact(league: League, prop: TradeProposal) -> list[ContractImpact]
         delta = sum(league.players[p].salary for p in in_ids) - sum(league.players[p].salary for p in out_ids)
         future = []
         for offset in range(1, 4):
-            change = sum(league.players[p].salary for p in in_ids if league.players[p].contract_years > offset)
-            change -= sum(league.players[p].salary for p in out_ids if league.players[p].contract_years > offset)
+            change = sum(contracts.salary_in(league.players[p], offset) for p in in_ids
+                         if league.players[p].contract_years > offset)
+            change -= sum(contracts.salary_in(league.players[p], offset) for p in out_ids
+                          if league.players[p].contract_years > offset)
             future.append(round(change, 2))
+        room = finance.cap_room(league, team)
+        _, _, out_aav, in_aav = salary_flow(league, prop, abbr)
+        check = financial_check(league, prop, abbr)
         out.append(ContractImpact(
-            abbr, before, round(before + delta, 2), round(league.salary_cap - before - delta, 2), future,
+            abbr, before, round(before + delta, 2), None if room is None else round(room - delta, 2), future,
             sum(league.players[p].contract_years for p in in_ids),
             sum(league.players[p].contract_years for p in out_ids),
+            finance.projected_tax(league, team).total,
+            finance.projected_tax(league, team, round(in_aav - out_aav, 4)).total,
+            check.messages(),
         ))
     return out
 

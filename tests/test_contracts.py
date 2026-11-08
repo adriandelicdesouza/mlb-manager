@@ -1,6 +1,6 @@
 import unittest
 
-from mlb_manager import contracts
+from mlb_manager import contracts, finance
 from mlb_manager.league import League
 from mlb_manager.models import Player
 
@@ -17,6 +17,7 @@ class ContractRuleTests(unittest.TestCase):
         salaries = [contracts.market_salary(make_player(level=lvl)) for lvl in (40, 55, 70, 85)]
         self.assertEqual(salaries, sorted(salaries))
         self.assertEqual(salaries[0], contracts.MIN_SALARY)
+        self.assertEqual(contracts.market_salary(make_player(level=40), 0.5), 0.5)
         self.assertLessEqual(salaries[-1], contracts.MAX_SALARY)
 
     def test_relievers_and_veterans_cost_less(self) -> None:
@@ -35,10 +36,19 @@ class ContractRuleTests(unittest.TestCase):
         self.assertTrue(1 <= years <= contracts.max_years(p))
         self.assertEqual(contracts.max_years(make_player(age=37)), 1)
 
-    def test_cap_rule(self) -> None:
-        self.assertTrue(contracts.fits_under_cap(100, 120, 125))
-        self.assertFalse(contracts.fits_under_cap(100, 130, 125))
-        self.assertTrue(contracts.fits_under_cap(140, 135, 125))  # shedding salary is fine
+    def test_back_loaded_contracts(self) -> None:
+        p = make_player()
+        contracts.sign(p, "NYY", 20.0, 5)
+        self.assertEqual(p.contract_aav, 20.0)
+        self.assertLess(p.salary, 20.0)
+        cash = [contracts.salary_in(p, t) for t in range(5)]
+        self.assertEqual(cash, sorted(cash))
+        self.assertAlmostEqual(sum(cash), 100.0)
+        contracts.advance_contract_year(p)
+        self.assertEqual(p.contract_years, 4)
+        self.assertAlmostEqual(p.salary, cash[1])
+        contracts.sign(p, "NYY", 20.0, 2)  # short deals are flat
+        self.assertEqual(p.salary, 20.0)
 
     def test_status_labels(self) -> None:
         p = make_player()
@@ -46,7 +56,10 @@ class ContractRuleTests(unittest.TestCase):
         contracts.sign(p, "NYY", 5, 1)
         self.assertEqual(contracts.contract_status(p), "Expiring")
         p.contract_years = 0
+        p.service_years = 7
         self.assertEqual(contracts.contract_status(p), "Pending FA")
+        p.service_years = 3
+        self.assertEqual(contracts.contract_status(p), "Arb-eligible")
         p.contract_years = 3
         self.assertEqual(contracts.contract_status(p), "Signed")
 
@@ -64,9 +77,12 @@ class LeagueContractTests(unittest.TestCase):
                 self.assertGreaterEqual(p.contract_years, 1)
                 self.assertGreater(p.potential, 0)
 
-    def test_all_clubs_start_under_the_cap(self) -> None:
-        for team in self.league.teams.values():
-            self.assertLessEqual(contracts.payroll(team, self.league.players), self.league.salary_cap)
+    def test_initial_payrolls_follow_budgets(self) -> None:
+        lg = self.league
+        for team in lg.teams.values():
+            budget = finance.payroll_budget(lg, team)
+            self.assertLessEqual(contracts.payroll(team, lg.players), budget * 1.06)
+            self.assertGreaterEqual(contracts.payroll(team, lg.players), budget * 0.69)
 
     def test_commitments_decline_over_time(self) -> None:
         team = self.league.user
@@ -75,10 +91,11 @@ class LeagueContractTests(unittest.TestCase):
         self.assertEqual(commits, sorted(commits, reverse=True))
 
     def test_configurable_cap(self) -> None:
-        league = League.create(seed=60, user_team="BOS", salary_cap=90)
-        self.assertEqual(league.salary_cap, 90)
+        league = League.create(seed=60, user_team="BOS", salary_cap=120)
+        self.assertTrue(finance.rules(league).hard_cap)
+        self.assertEqual(finance.rules(league).cap_amount, 120)
         for team in league.teams.values():
-            self.assertLessEqual(contracts.payroll(team, league.players), 90)
+            self.assertLessEqual(contracts.payroll(team, league.players), 120)
 
     def test_initial_free_agent_pool(self) -> None:
         free = [p for p in self.league.players.values() if p.team is None]

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from mlb_manager import contracts, frontoffice, valuation
+from mlb_manager import contracts, finance, frontoffice, valuation
 from mlb_manager.models import Player, Team
 
 if TYPE_CHECKING:
@@ -13,7 +13,6 @@ if TYPE_CHECKING:
 IN_SEASON_DISCOUNT = 0.6  # unsigned players take less once the season is under way
 NEGOTIATION_FLOOR = 0.85  # offers below this share of the ask are always refused
 CPU_SIGNING_ROUNDS = 3
-CPU_CAP_BUFFER = 3.0
 
 
 class FreeAgencyError(ValueError):
@@ -29,10 +28,19 @@ def free_agents(league: League) -> list[Player]:
 
 
 def asking(league: League, player: Player) -> tuple[float, int]:
+    """``(AAV, years)`` the player asks for (at least the league minimum)."""
+    minimum = finance.min_salary(league)
     if league.in_season:
-        salary = contracts.market_salary(player) * contracts.demand_factor(player, league.seed)
-        return contracts.round_salary(salary * IN_SEASON_DISCOUNT), 1
-    return contracts.asking_contract(player, league.seed)
+        salary = contracts.market_salary(player, minimum) * contracts.demand_factor(player, league.seed)
+        return contracts.round_salary(salary * IN_SEASON_DISCOUNT, minimum), 1
+    return contracts.asking_contract(player, league.seed, minimum=minimum)
+
+
+def signing_check(league: League, team: Team, salary: float, years: int) -> finance.TransactionCheck:
+    """The league's financial rules applied to signing a free agent at ``salary`` (AAV)."""
+    salary = contracts.round_salary(salary, finance.min_salary(league))
+    return finance.check_transaction(league, team, finance.KIND_FREE_AGENT,
+                                     contracts.first_year_salary(salary, years), salary=salary)
 
 
 def evaluate_offer(league: League, player: Player, salary: float, years: int) -> tuple[bool, str]:
@@ -60,16 +68,17 @@ def sign_free_agent(league: League, team: Team, player_id: int, salary: float, y
         raise FreeAgencyError(
             f"Organisation is full ({frontoffice.MAX_ORG}). Release someone first."
         )
-    salary = contracts.round_salary(salary)
-    space = contracts.cap_space(team, league.players, league.salary_cap)
-    if salary > space + 1e-9:
-        raise FreeAgencyError(
-            f"Signing would exceed the salary cap (space {contracts.money(space)})."
-        )
+    minimum = finance.min_salary(league)
+    if salary < minimum - 1e-9:
+        raise FreeAgencyError(f"Offers must be at least the league minimum of {finance.format_amount(minimum)}.")
+    salary = contracts.round_salary(salary, minimum)
+    check = signing_check(league, team, salary, years)
+    if not check.allowed:
+        raise FreeAgencyError(check.reason)
     accepted, message = evaluate_offer(league, player, salary, years)
     if not accepted:
         raise FreeAgencyError(message)
-    contracts.sign(player, team.abbr, salary, years)
+    contracts.sign(player, team.abbr, salary, years, minimum)
     if team.abbr == league.user_team and len(team.active) < 26:
         team.active.append(player.id)
     else:
@@ -79,6 +88,9 @@ def sign_free_agent(league: League, team: Team, player_id: int, salary: float, y
         f"for {years} yr / {contracts.money(salary)}."
     )
     league.log_transaction(note)
+    if team.abbr == league.user_team:
+        for warning in check.warnings:
+            league.add_news(warning)
     return note
 
 
@@ -87,13 +99,17 @@ def _cpu_wants(league: League, team: Team, player: Player, ask_salary: float,
     """Score a free agent for a CPU club, or None if it should pass."""
     if player.overall <= frontoffice.incumbent_rating(team, league.players, player) + 1:
         return None
-    if team.strategy == "rebuilding" and player.age > 29 and ask_salary > 3.0:
+    if team.strategy == "rebuilding" and player.age > 29 and ask_salary > 3.0 * contracts.MARKET_SCALE:
         return None
-    space = contracts.cap_space(team, league.players, league.salary_cap)
-    if ask_salary > space - CPU_CAP_BUFFER:
+    years = asking(league, player)[1]
+    if not finance.cpu_can_add(league, team, finance.KIND_FREE_AGENT,
+                               contracts.first_year_salary(ask_salary, years), salary=ask_salary):
         return None
     value = (val or valuation.Valuator(league)).player(player, team).total
-    return value / (1.0 + ask_salary * 0.05)
+    score = value / (1.0 + ask_salary / contracts.MARKET_SCALE * 0.05)
+    if finance.below_floor(league, team) > 0 and value > 0:
+        score *= 1.5  # clubs under a salary floor need to spend
+    return score
 
 
 def cpu_signing_round(league: League) -> list[str]:
@@ -101,7 +117,7 @@ def cpu_signing_round(league: League) -> list[str]:
     order = sorted(
         (t for t in league.teams.values() if t.abbr != league.user_team),
         key=lambda t: (frontoffice.STRATEGIES.index(t.strategy),
-                       -contracts.cap_space(t, league.players, league.salary_cap), t.abbr),
+                       -finance.spending_room(league, t), t.abbr),
     )
     for team in order:
         if len(team.all_players) >= frontoffice.MAX_ORG:
@@ -117,7 +133,7 @@ def cpu_signing_round(league: League) -> list[str]:
         if best is None:
             continue
         _, player, salary, years = best
-        contracts.sign(player, team.abbr, salary, years)
+        contracts.sign(player, team.abbr, salary, years, finance.min_salary(league))
         team.reserves.append(player.id)
         note = (
             f"{team.abbr} signed free agent {player.name} ({player.position}, {player.overall} OVR) "

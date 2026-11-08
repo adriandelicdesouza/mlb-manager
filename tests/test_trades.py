@@ -4,6 +4,7 @@ import unittest
 from mlb_manager import contracts, frontoffice, roster, trades
 from mlb_manager.league import League
 from mlb_manager.trades import TradeProposal
+from tests.helpers import hard_cap
 
 
 def by_value(league, team, reverse=True):
@@ -125,11 +126,11 @@ class TradeTests(unittest.TestCase):
 
     def test_cap_blocks_taking_on_salary(self) -> None:
         lg = self.league
-        lg.salary_cap = contracts.payroll(self.user, lg.players) + 0.5
+        hard_cap(lg, contracts.payroll(self.user, lg.players) + 0.5)
         expensive = max(trades.tradable_players(lg, self.bos), key=lambda p: p.salary)
         cheap = min(trades.tradable_players(lg, self.user), key=lambda p: p.salary)
         prop = TradeProposal("NYY", "BOS", a_players=[cheap.id], b_players=[expensive.id])
-        self.assertTrue(any("salary cap" in e for e in trades.validate(lg, prop)))
+        self.assertTrue(any("hard cap" in e for e in trades.validate(lg, prop)))
 
     def test_cpu_offer_to_user_is_valid_and_cpu_approved(self) -> None:
         lg = self.league

@@ -126,8 +126,8 @@ class FrontOfficeCliTests(unittest.TestCase):
         prospect = twin.draft.pool[0]
         twin.draft_select(prospect)
         twin.advance_offseason()
-        space = contracts.cap_space(twin.user, twin.players, twin.salary_cap)
-        fa = next(p for p in freeagency.free_agents(twin) if freeagency.asking(twin, p)[0] <= space)
+        fa = next(p for p in freeagency.free_agents(twin)
+                  if freeagency.signing_check(twin, twin.user, *freeagency.asking(twin, p)).allowed)
 
         league = league_at_offseason(seed=104, user="DET")
         text = self.run_app(league, [

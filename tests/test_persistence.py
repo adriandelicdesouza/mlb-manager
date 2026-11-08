@@ -90,7 +90,7 @@ class PersistenceTests(unittest.TestCase):
         league.sim_days(4)
         data = league.to_dict()
         # Strip everything version 2 introduced to reproduce a version-1 save.
-        for key in ("salary_cap", "draft_picks", "draft", "pending_draft_order", "trade_offers",
+        for key in ("finance", "draft_picks", "draft", "pending_draft_order", "trade_offers",
                     "next_offer_id", "transactions"):
             data.pop(key)
         v2_player_keys = ("potential", "development", "salary", "contract_years", "contract_length",

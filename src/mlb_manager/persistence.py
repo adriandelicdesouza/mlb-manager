@@ -9,11 +9,11 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from mlb_manager import __version__, frontoffice
+from mlb_manager import __version__, finance, frontoffice
 from mlb_manager.league import League
 
-SAVE_FORMAT_VERSION = 4
-SUPPORTED_VERSIONS = (1, 2, 3, 4)
+SAVE_FORMAT_VERSION = 5
+SUPPORTED_VERSIONS = (1, 2, 3, 4, 5)
 SAVE_SUFFIX = ".json"
 SAVE_DIR_ENV = "MLB_MANAGER_SAVE_DIR"
 
@@ -92,6 +92,8 @@ def load_league(path: str | os.PathLike[str]) -> League:
         migrate_v2_to_v3(league)
     if version in (1, 2, 3):
         migrate_v3_to_v4(league)
+    if version in (1, 2, 3, 4):
+        migrate_v4_to_v5(league)
     return league
 
 
@@ -137,6 +139,24 @@ def migrate_v3_to_v4(league: League) -> None:
             player.injury_total = player.injury_days
     league.add_news("Save upgraded: career and postseason statistics, morale, rehab assignments "
                     "and franchise records are now tracked.")
+
+
+def migrate_v4_to_v5(league: League) -> None:
+    """v4 saves predate configurable financial rules.
+
+    The league gets the standard MLB rules of its season (no salary cap, the
+    Competitive Balance Tax, revenue sharing). Contracts, payrolls, dead money
+    and history are kept exactly; existing contracts are flat, so their AAV is
+    their salary. The old hard cap is remembered so it can be restored from
+    the load screen. Mid-season saves get CBT accruals estimated from today's
+    payrolls for the days already played.
+    """
+    for player in league.players.values():
+        if player.contract_aav <= 0 and player.salary > 0:
+            player.contract_aav = player.salary
+    finance.initialise_accruals(league)
+    league.finance.migrated = True
+    league.add_news("Save upgraded: " + " ".join(finance.migration_notes(league)))
 
 
 def list_saves(directory: Path | None = None) -> list[Path]:

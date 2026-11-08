@@ -1,7 +1,8 @@
 import unittest
 
-from mlb_manager import contracts, freeagency, frontoffice
+from mlb_manager import contracts, finance, freeagency, frontoffice
 from mlb_manager.league import League
+from tests.helpers import hard_cap, set_rules
 
 
 class FreeAgencyTests(unittest.TestCase):
@@ -29,16 +30,17 @@ class FreeAgencyTests(unittest.TestCase):
         freeagency.sign_free_agent(self.league, self.team, self.fa.id, salary, years)
         self.assertEqual(self.fa.team, "MIL")
         self.assertIn(self.fa.id, self.team.all_players)
-        self.assertAlmostEqual(contracts.payroll(self.team, self.league.players), before + salary, places=2)
+        self.assertAlmostEqual(contracts.payroll(self.team, self.league.players), before + self.fa.salary, places=2)
+        self.assertAlmostEqual(contracts.aav(self.fa), salary, places=2)
         self.assertNotIn(self.fa, freeagency.free_agents(self.league))
 
     def test_cap_and_roster_limits(self) -> None:
         lg = self.league
         salary, years = freeagency.asking(lg, self.fa)
-        lg.salary_cap = contracts.payroll(self.team, lg.players) + salary - 0.1
+        hard_cap(lg, contracts.payroll(self.team, lg.players) + salary - 0.1)
         with self.assertRaises(freeagency.FreeAgencyError):
             freeagency.sign_free_agent(lg, self.team, self.fa.id, salary, years)
-        lg.salary_cap = 1000
+        set_rules(lg)  # no cap
         while len(self.team.all_players) < frontoffice.MAX_ORG:
             self.team.reserves.append(self.team.reserves[0])  # pad the count
         with self.assertRaises(freeagency.FreeAgencyError):
@@ -52,8 +54,11 @@ class FreeAgencyTests(unittest.TestCase):
         lg = self.league
         notes = freeagency.cpu_free_agency(lg)
         self.assertTrue(notes)
+        before = {a: contracts.payroll(t, lg.players) for a, t in lg.teams.items()}
         for team in lg.teams.values():
             if team.abbr != lg.user_team:
-                self.assertLessEqual(contracts.payroll(team, lg.players), lg.salary_cap)
+                # A club only adds payroll its owners' budget covers (including projected tax).
+                if contracts.payroll(team, lg.players) > before[team.abbr] + 1e-6:
+                    self.assertGreaterEqual(finance.spending_room(lg, team), -0.01)
         self.assertTrue(all("signed free agent" in n for n in notes))
         self.assertFalse(any(lg.user_team + " signed" in n for n in notes))

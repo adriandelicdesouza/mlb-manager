@@ -75,6 +75,7 @@ class Draft:
     order: list[str]  # original clubs in first-round order (worst record first)
     pool: list[int]  # undrafted prospect ids
     selections: list[DraftSelection] = field(default_factory=list)
+    first_round: list[str] | None = None  # round-1 order when it differs (CBT draft penalties)
 
     @property
     def total_picks(self) -> int:
@@ -86,7 +87,9 @@ class Draft:
 
     def slot(self, index: int) -> tuple[int, str]:
         """``(round, original club)`` for 0-based overall pick ``index``."""
-        return index // len(self.order) + 1, self.order[index % len(self.order)]
+        rnd = index // len(self.order) + 1
+        order = self.first_round if rnd == 1 and self.first_round else self.order
+        return rnd, order[index % len(self.order)]
 
     def current_slot(self) -> tuple[int, str] | None:
         if self.is_complete:
@@ -99,6 +102,7 @@ class Draft:
             "order": list(self.order),
             "pool": list(self.pool),
             "selections": [s.to_dict() for s in self.selections],
+            "first_round": list(self.first_round) if self.first_round else None,
         }
 
     @classmethod
@@ -108,6 +112,7 @@ class Draft:
             order=list(data["order"]),
             pool=[int(x) for x in data["pool"]],
             selections=[DraftSelection.from_dict(s) for s in data["selections"]],
+            first_round=list(data["first_round"]) if data.get("first_round") else None,
         )
 
 
