@@ -130,8 +130,12 @@ def roll_injury(player: Player, rng: random.Random) -> tuple[str, int]:
 def injuries_from_game(
     boxes: tuple[TeamBox, TeamBox], players: Mapping[int, Player], rng: random.Random,
     multiplier: Callable[[Player], float] | None = None,
+    workload: Mapping[int, int] | None = None,
 ) -> list[tuple[Player, str, int]]:
-    """Roll injuries for everyone who appeared in a game."""
+    """Roll injuries for everyone who appeared in a game.
+
+    ``workload`` gives a starter's effective pitch load when it differs from his
+    pitch count (pitching effort in managed games)."""
     results: list[tuple[Player, str, int]] = []
     mult = multiplier or (lambda _p: 1.0)
     for box in boxes:
@@ -142,7 +146,8 @@ def injuries_from_game(
         for pid, line in box.pitching.items():
             player = players[pid]
             factor = mult(player)
-            risk = (injury_risk(player, starter_pitches=line.pitches, multiplier=factor) if line.gs
+            pitches = workload.get(pid, line.pitches) if workload else line.pitches
+            risk = (injury_risk(player, starter_pitches=pitches, multiplier=factor) if line.gs
                     else injury_risk(player, relief=True, multiplier=factor))
             if rng.random() < risk:
                 results.append((player, *roll_injury(player, rng)))
