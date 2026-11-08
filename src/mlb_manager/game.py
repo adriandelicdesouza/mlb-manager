@@ -82,6 +82,8 @@ class GameResult:
     losing_pitcher: int
     save_pitcher: int | None
     log: list[str] = field(default_factory=list)
+    # Play-by-play snapshots (only recorded for the user's games; see GameSimulator).
+    events: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def away_runs(self) -> int:
@@ -117,6 +119,7 @@ class GameResult:
             "losing_pitcher": self.losing_pitcher,
             "save_pitcher": self.save_pitcher,
             "log": list(self.log),
+            "events": [dict(e) for e in self.events],
         }
 
     @classmethod
@@ -131,6 +134,7 @@ class GameResult:
             losing_pitcher=int(data["losing_pitcher"]),
             save_pitcher=data.get("save_pitcher"),
             log=list(data.get("log", [])),
+            events=[dict(e) for e in data.get("events", [])],
         )
 
 
@@ -195,8 +199,12 @@ class GameSimulator:
         rng: random.Random,
         away_starter: int,
         home_starter: int,
+        record_events: bool = False,
     ) -> None:
         self.players = players
+        # Event recording only appends snapshots; it never touches the RNG, so the
+        # same game plays out identically with or without it.
+        self.events: list[dict[str, Any]] | None = [] if record_events else None
         self.rng = rng
         self.away = self._make_side(away, away_starter)
         self.home = self._make_side(home, home_starter)
@@ -315,6 +323,7 @@ class GameSimulator:
         fielding.pitch_limit = reliever_pitch_limit(reliever)
         fielding.lead_at_entry[reliever.id] = lead
         fielding.box.pitching[reliever.id] = PitchingStats(g=1)
+        self._event("PC", batting, fielding, None, reliever.id, "PC", 0)
         half = "Top" if self.top else "Bot"
         self.log.append(f"{half} {self.inning}: {fielding.team.abbr} brings in {reliever.short_name}.")
 
@@ -364,10 +373,12 @@ class GameSimulator:
         if self.rng.random() < success:
             line.sb += 1
             self.bases[1], self.bases[0] = runner, None
+            self._event("SB", batting, fielding, runner.player_id, fielding.pitcher_id, "SB", 0)
         else:
             line.cs += 1
             self.bases[0] = None
             self._record_out(fielding)
+            self._event("CS", batting, fielding, runner.player_id, fielding.pitcher_id, "CS", 0)
 
     def _outcome_probabilities(self, batter: Player, pitcher: Player, fielding: _Side) -> dict[str, float]:
         pitches = fielding.box.pitching[pitcher.id].pitches
@@ -437,6 +448,7 @@ class GameSimulator:
 
         bline = batting.box.batting[batter_id]
         pline = fielding.box.pitching[pitcher.id]
+        outs_before = self.outs
         bline.pa += 1
         pline.pitches += self._pitch_count(outcome)
 
@@ -581,6 +593,22 @@ class GameSimulator:
             batting.box.hits += 1
         if scored:
             self._score_runs(batting, fielding, scored, batter_id, rbi_eligible, outcome)
+        if self.events is not None:
+            double_play = outcome == "GO" and self.outs - outs_before >= 2
+            self._event("PA", batting, fielding, batter_id, pitcher.id, "DP" if double_play else outcome,
+                        len(scored))
+
+    def _event(self, kind: str, batting: _Side, fielding: _Side, player_id: int | None,
+               pitcher_id: int, outcome: str, runs: int) -> None:
+        """Snapshot of the game state after a play (no-op unless recording)."""
+        if self.events is None:
+            return
+        self.events.append({
+            "k": kind, "i": self.inning, "top": self.top, "o": self.outs,
+            "b": [r.player_id if r else 0 for r in self.bases],
+            "a": self.away.box.runs, "h": self.home.box.runs,
+            "p": player_id or 0, "pit": pitcher_id, "r": outcome, "n": runs, "team": batting.team.abbr,
+        })
 
     def _pitch_count(self, outcome: str) -> int:
         base = {"K": 4.8, "BB": 5.7, "HBP": 3.2}.get(outcome, 3.4)
@@ -675,6 +703,7 @@ class GameSimulator:
             losing_pitcher=loser_pid,
             save_pitcher=save_pid,
             log=self.log,
+            events=self.events or [],
         )
 
 
@@ -685,6 +714,7 @@ def simulate_game(
     rng: random.Random,
     away_starter: int,
     home_starter: int,
+    record_events: bool = False,
 ) -> GameResult:
     """Simulate one complete game and return its result."""
-    return GameSimulator(away, home, players, rng, away_starter, home_starter).play()
+    return GameSimulator(away, home, players, rng, away_starter, home_starter, record_events).play()

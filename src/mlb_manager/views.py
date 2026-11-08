@@ -1135,3 +1135,79 @@ def morale_view(league: League, team: Team) -> str:
     return (f"{team.full_name} - clubhouse morale (lowest first)\n"
             + table(["ID", "Name", "Pos", "OVR", "Mor", "Mood", "Concerns"], [r for _, r in rows[:20]],
                     "rllrrll"))
+
+
+# ----------------------------------------------------------------------------- GUI helpers (pure)
+
+
+def recent_results(league: League, abbr: str, count: int = 5) -> list[str]:
+    """Most recent regular-season results for a club, newest first."""
+    played = [g for g in league.team_games(abbr) if g.played][-count:]
+    out = []
+    for g in reversed(played):
+        home = g.home == abbr
+        mine, theirs = (g.home_runs, g.away_runs) if home else (g.away_runs, g.home_runs)
+        opp = g.away if home else g.home
+        out.append(f"Day {g.day + 1:>3}  {'W' if mine > theirs else 'L'} {mine}-{theirs}  {'vs' if home else '@ '} {opp}")
+    return out
+
+
+def upcoming_games(league: League, abbr: str, count: int = 3) -> list[str]:
+    if league.phase == PHASE_POSTSEASON:
+        series = league.user_series() if abbr == league.user_team else None
+        if series and not series.is_over:
+            return [f"{series.round_name}: {series.summary()}"]
+        return [f"Postseason: {league.postseason_finish(abbr)}"]
+    games = [g for g in league.team_games(abbr) if not g.played][:count]
+    return [f"Day {g.day + 1:>3}  {'vs' if g.home == abbr else '@ '} {g.away if g.home == abbr else g.home}"
+            for g in games]
+
+
+def division_position(league: League, abbr: str) -> str:
+    team = league.teams[abbr]
+    records = league.records()
+    order = division_standings(league.teams, records, team.league, team.division)
+    place = order.index(abbr) + 1
+    behind = games_back(records[order[0]], records[abbr])
+    suffix = {1: "st", 2: "nd", 3: "rd"}.get(place, "th")
+    return f"{place}{suffix} {team.league} {team.division}" + (f", {gb(behind)} GB" if behind else "")
+
+
+OUTCOME_TEXT: dict[str, str] = {
+    "K": "strikes out", "BB": "walks", "HBP": "is hit by a pitch", "1B": "singles", "2B": "doubles",
+    "3B": "triples", "HR": "homers", "E": "reaches on an error", "GO": "grounds out", "DP": "grounds into a double play",
+    "FO": "flies out", "LO": "lines out",
+}
+
+
+def event_text(league: League, event: dict[str, object]) -> str:
+    """One play-by-play line for a recorded game event."""
+    def name(pid: object) -> str:
+        player = league.players.get(int(pid)) if pid else None  # type: ignore[arg-type]
+        return player.short_name if player else f"#{pid}"
+
+    half = "Top" if event["top"] else "Bot"
+    prefix = f"{half} {event['i']}"
+    kind = event["k"]
+    if kind == "PC":
+        return f"{prefix}: pitching change - {name(event['pit'])} comes in."
+    if kind == "SB":
+        return f"{prefix}: {name(event['p'])} steals second."
+    if kind == "CS":
+        return f"{prefix}: {name(event['p'])} caught stealing."
+    outcome = str(event["r"])
+    if outcome == "FO" and event["n"]:
+        text = "hits a sacrifice fly"
+    else:
+        text = OUTCOME_TEXT.get(outcome, "puts the ball in play")
+    runs = int(event["n"])  # type: ignore[arg-type]
+    scored = f" {runs} run{'s' if runs > 1 else ''} score{'s' if runs == 1 else ''}." if runs else ""
+    score = f" ({event['a']}-{event['h']})" if runs else ""
+    return f"{prefix}: {name(event['p'])} {text}.{scored}{score}"
+
+
+def bases_diagram(event: dict[str, object] | None) -> str:
+    """Three-line diamond: filled markers for occupied bases."""
+    occupied = [bool(x) for x in (event["b"] if event and int(event["o"]) < 3 else [0, 0, 0])]  # type: ignore[index]
+    mark = ["●" if o else "○" for o in occupied]
+    return f"    {mark[1]}\n  {mark[2]}   {mark[0]}\n    ◇"

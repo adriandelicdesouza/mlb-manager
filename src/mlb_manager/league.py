@@ -269,7 +269,7 @@ class League:
         home_day, _ = injuries.game_day_team(home_team, self.players)
         result = simulate_game(
             away_day, home_day, self.game_players(away_day, home_day), self._rng("game", key),
-            away_starter, home_starter,
+            away_starter, home_starter, record_events=self.user_team in (away, home),
         )
         self._apply_result(result, record_stats, round_code)
         self._apply_injuries(result, key)
