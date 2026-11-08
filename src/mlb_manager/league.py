@@ -16,12 +16,13 @@ from typing import Any
 
 from mlb_manager import awards as awards_mod
 from mlb_manager import careers, contracts, development, freeagency, frontoffice, injuries, morale, seasonlog, trades
+from mlb_manager.dugout import LiveGame
 from mlb_manager import draft as draft_mod
 from mlb_manager import ratings as rt
 from mlb_manager import roster
 from mlb_manager.draft import Draft, DraftPick, DraftSelection
 from mlb_manager.franchises import LEAGUES, get_franchise
-from mlb_manager.game import GameResult, simulate_game
+from mlb_manager.game import GameResult, GameSimulator, simulate_game
 from mlb_manager.generation import PlayerFactory, generate_rosters
 from mlb_manager.models import BattingStats, PitchingStats, Player, RetiredPlayer, Team
 from mlb_manager.playoffs import Playoffs, Series, SeriesGame
@@ -68,6 +69,18 @@ class PlayedGame:
 
 
 @dataclass(slots=True)
+class UserGame:
+    """The user's game on the next day: who plays where and how it counts."""
+
+    away: str
+    home: str
+    key: str
+    label: str
+    record_stats: bool
+    round_code: str | None = None
+
+
+@dataclass(slots=True)
 class DayReport:
     day: int
     phase: str
@@ -106,6 +119,7 @@ class League:
     career_milestones: list[str] = field(default_factory=list)  # all-time career milestones
     trade_memory: list[dict[str, Any]] = field(default_factory=list)  # user proposals and outcomes
     trade_log: list[dict[str, Any]] = field(default_factory=list)  # executed trades (anti-flip, limits)
+    live_game: LiveGame | None = field(default=None, repr=False)  # the user's game in progress (dugout)
     _by_day: dict[int, list[ScheduledGame]] | None = field(default=None, repr=False)
     _pending_news: list[str] = field(default_factory=list, repr=False)
     _injury_teams: set[str] = field(default_factory=set, repr=False)
@@ -259,7 +273,21 @@ class League:
     def play_game(self, away: str, home: str, key: str, record_stats: bool,
                   round_code: str | None = None) -> GameResult:
         """Play one game. Regular-season stats are recorded when ``record_stats``;
-        postseason stats go to the round ``round_code`` (never mixed)."""
+        postseason stats go to the round ``round_code`` (never mixed).
+
+        If the user is managing this game live, its result is used (the rest of
+        the game is completed automatically if it is still in progress)."""
+        live = self.live_game
+        if live is not None and live.key == key:
+            if not live.is_over:
+                live.finish()
+            result = live.result
+            assert result is not None
+            self.live_game = None
+            self._apply_result(result, record_stats, round_code)
+            self._apply_injuries(result, key)
+            self.last_user_game = result
+            return result
         away_team, home_team = self.teams[away], self.teams[home]
         self._prepare(away_team)
         self._prepare(home_team)
@@ -276,6 +304,64 @@ class League:
         if self.user_team in (away, home):
             self.last_user_game = result
         return result
+
+    # ------------------------------------------------------------------ live games (dugout)
+
+    def user_game_today(self) -> UserGame | None:
+        """The user's game on the next day to be played, if any."""
+        if self.phase == PHASE_REGULAR:
+            for g in self.games_by_day().get(self.day, []):
+                if not g.played and self.user_team in (g.away, g.home):
+                    return UserGame(g.away, g.home, f"reg:{g.game_id}", "Regular season", True)
+            return None
+        if self.phase == PHASE_POSTSEASON and self.playoffs is not None:
+            for series in self.playoffs.active_series():
+                if self.user_team in (series.high, series.low):
+                    away, home = series.next_matchup()
+                    number = len(series.games) + 1
+                    return UserGame(away, home, f"post:{series.series_id}:{number}",
+                                    f"{series.round_name} G{number}", False, careers.round_code(series.round_index))
+        return None
+
+    def advance_to_user_game(self, max_days: int = 10) -> list[DayReport]:
+        """Play days without a user game until the user's club plays next (or the season ends)."""
+        reports: list[DayReport] = []
+        for _ in range(max_days):
+            if not self.in_season or self.user_game_today() is not None or self.live_game is not None:
+                break
+            reports.append(self.advance_day())
+        return reports
+
+    def start_live_game(self) -> LiveGame:
+        """Set up the user's next game for pitch-by-pitch management from the dugout.
+
+        Pre-game work (roster checks, starting pitchers, injury replacements) is
+        exactly what an automatic game would do; the game itself is then played
+        through decision points. Playing the day (``advance_day``) consumes it."""
+        if self.live_game is not None:
+            return self.live_game
+        info = self.user_game_today()
+        if info is None:
+            raise RuntimeError("Your club does not play today.")
+        away_team, home_team = self.teams[info.away], self.teams[info.home]
+        self._prepare(away_team)
+        self._prepare(home_team)
+        away_starter = self.choose_starter(away_team)
+        home_starter = self.choose_starter(home_team)
+        away_day, _ = injuries.game_day_team(away_team, self.players)
+        home_day, _ = injuries.game_day_team(home_team, self.players)
+        sim = GameSimulator(away_day, home_day, self.game_players(away_day, home_day), self._rng("game", info.key),
+                            away_starter, home_starter, pitch_by_pitch=True)
+        user_key = "away" if info.away == self.user_team else "home"
+        self.live_game = LiveGame(sim, user_key, info.key, info.label, info.record_stats, info.round_code,
+                                  self._rng("dugout", info.key))
+        return self.live_game
+
+    def finish_live_game(self) -> DayReport:
+        """Complete the day of the live game (finishing the game automatically if needed)."""
+        if self.live_game is None:
+            raise RuntimeError("No game in progress.")
+        return self.advance_day()
 
     def form_modifier(self, player: Player) -> int:
         """Rating points added in games today: morale and post-injury rust."""
@@ -323,7 +409,7 @@ class League:
         for box in (result.away_box, result.home_box):
             for pid, line in box.pitching.items():
                 player = self.players[pid]
-                player.fatigue += line.pitches
+                player.fatigue += result.workload.get(pid, line.pitches)
                 if record_stats:
                     player.pitching.add(line)
                     for message in seasonlog.stat_milestones(player, None, line):
@@ -336,7 +422,8 @@ class League:
                 line = box.batting[pid]
                 if record_stats:
                     player.batting.add(line)
-                    player.games_by_pos[position] = player.games_by_pos.get(position, 0) + 1
+                    if pid not in box.subs:  # games *started* per position
+                        player.games_by_pos[position] = player.games_by_pos.get(position, 0) + 1
                     for message in seasonlog.stat_milestones(player, line, None):
                         self.add_milestone(f"{pid}:{message}", message, self._pending_news)
                     self._career_milestones(player, line, None)
@@ -352,7 +439,7 @@ class League:
     def _apply_injuries(self, result: GameResult, key: str) -> None:
         rng = self._rng("injury", key)
         for player, description, days in injuries.injuries_from_game(
-            (result.away_box, result.home_box), self.players, rng, self._injury_multiplier
+            (result.away_box, result.home_box), self.players, rng, self._injury_multiplier, result.workload
         ):
             injuries.apply_injury(player, description, days, self.year, self.day)
             if player.team == self.user_team:
@@ -1125,13 +1212,14 @@ class League:
             "career_milestones": list(self.career_milestones),
             "trade_memory": list(self.trade_memory),
             "trade_log": list(self.trade_log),
+            "live_game": self.live_game.to_dict() if self.live_game else None,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> League:
         teams = {t["abbr"]: Team.from_dict(t) for t in data["teams"]}
         players = {int(p["id"]): Player.from_dict(p) for p in data["players"]}
-        return cls(
+        league = cls(
             seed=int(data["seed"]),
             year=int(data["year"]),
             user_team=data["user_team"],
@@ -1164,6 +1252,12 @@ class League:
             trade_memory=list(data.get("trade_memory", [])),
             trade_log=list(data.get("trade_log", [])),
         )
+        live = data.get("live_game")
+        if live:
+            sides = live["sim"]
+            away, home = Team.from_dict(sides["away"]["team"]), Team.from_dict(sides["home"]["team"])
+            league.live_game = LiveGame.from_dict(live, league.game_players(away, home))
+        return league
 
 
 def contracts_error(message: str) -> ValueError:

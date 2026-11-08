@@ -5,7 +5,8 @@ Every function returns a string; nothing here reads input or mutates state.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING
 
 from mlb_manager import ratings as rt
 from mlb_manager import roster
@@ -29,6 +30,9 @@ from mlb_manager.standings import (
     games_back,
     wild_card_standings,
 )
+
+if TYPE_CHECKING:
+    from mlb_manager.dugout import Decision, LiveGame
 
 
 def rule(width: int = 72, char: str = "-") -> str:
@@ -461,11 +465,28 @@ def box_score(league: League, result: GameResult) -> str:
     return "\n".join(out)
 
 
+def box_order(box: TeamBox) -> list[tuple[int, str, bool]]:
+    """Batting order for display: each substitute right after the player he replaced."""
+    entries = list(box.batting_order)
+    out: list[tuple[int, str, bool]] = []
+
+    def add(pid: int, pos: str, sub: bool) -> None:
+        out.append((pid, pos, sub))
+        for other, opos in entries:
+            if box.subs.get(other) == pid:
+                add(other, opos, True)
+
+    for pid, pos in entries:
+        if pid not in box.subs:
+            add(pid, pos, False)
+    return out
+
+
 def _batting_box(box: TeamBox, name) -> str:  # noqa: ANN001
     rows = []
-    for pid, pos in box.batting_order:
+    for pid, pos, sub in box_order(box):
         s = box.batting[pid]
-        rows.append([f"{name(pid)} {pos}", s.ab, s.r, s.h, s.rbi, s.bb, s.so, s.hr])
+        rows.append([f"{'  ' if sub else ''}{name(pid)} {pos}", s.ab, s.r, s.h, s.rbi, s.bb, s.so, s.hr])
     return table([f"{box.abbr} batting", "AB", "R", "H", "RBI", "BB", "SO", "HR"], rows, "lrrrrrrr")
 
 
@@ -1176,7 +1197,18 @@ def division_position(league: League, abbr: str) -> str:
 OUTCOME_TEXT: dict[str, str] = {
     "K": "strikes out", "BB": "walks", "HBP": "is hit by a pitch", "1B": "singles", "2B": "doubles",
     "3B": "triples", "HR": "homers", "E": "reaches on an error", "GO": "grounds out", "DP": "grounds into a double play",
-    "FO": "flies out", "LO": "lines out",
+    "FO": "flies out", "LO": "lines out", "IBB": "is intentionally walked", "SAC": "lays down a sacrifice bunt",
+    "BH": "beats out a bunt for a hit", "FC": "bunts into a fielder's choice", "POP": "pops up a bunt",
+    "BO": "is thrown out on a bunt",
+}
+PITCH_RESULT_TEXT: dict[str, str] = {
+    "ball": "ball", "called": "called strike", "swinging": "swinging strike", "foul": "foul",
+    "inplay": "in play", "hbp": "hit by pitch", "bunt": "bunted fair", "bunt_foul": "foul bunt",
+    "bunt_miss": "missed bunt",
+}
+LOCATION_TEXT: dict[str, str] = {
+    "heart": "over the heart of the plate", "edge": "on the edge", "up": "up in the zone", "down": "down",
+    "chase": "off the plate", "waste": "well outside", "mistake": "left over the plate", "wild": "way off target",
 }
 
 
@@ -1189,12 +1221,26 @@ def event_text(league: League, event: dict[str, object]) -> str:
     half = "Top" if event["top"] else "Bot"
     prefix = f"{half} {event['i']}"
     kind = event["k"]
+    base = {2: "second", 3: "third"}.get(int(event.get("base", 2)), "second")  # type: ignore[call-overload]
     if kind == "PC":
         return f"{prefix}: pitching change - {name(event['pit'])} comes in."
     if kind == "SB":
-        return f"{prefix}: {name(event['p'])} steals second."
+        return f"{prefix}: {name(event['p'])} steals {base}."
     if kind == "CS":
-        return f"{prefix}: {name(event['p'])} caught stealing."
+        return f"{prefix}: {name(event['p'])} caught stealing {base}."
+    if kind == "P":
+        return f"{prefix}: {pitch_text(event)}"
+    if kind in ("DEC", "SUB"):
+        return f"{prefix}: {event.get('t', '')}"
+    if kind == "HALF":
+        return f"{'Top' if event['top'] else 'Bottom'} of the {ordinal(int(event['i']))}"  # type: ignore[call-overload]
+    if kind == "PK":
+        bag = ("first", "second", "third")[int(event.get("base", 1)) - 1]  # type: ignore[call-overload]
+        if event["r"] == "out":
+            return f"{prefix}: {name(event['p'])} is picked off {bag}!"
+        return f"{prefix}: pickoff throw to {bag}, {name(event['p'])} gets back."
+    if kind == "TO":
+        return f"{prefix}: {name(event['p'])} is thrown out on the bases."
     outcome = str(event["r"])
     if outcome == "FO" and event["n"]:
         text = "hits a sacrifice fly"
@@ -1211,3 +1257,264 @@ def bases_diagram(event: dict[str, object] | None) -> str:
     occupied = [bool(x) for x in (event["b"] if event and int(event["o"]) < 3 else [0, 0, 0])]  # type: ignore[index]
     mark = ["●" if o else "○" for o in occupied]
     return f"    {mark[1]}\n  {mark[2]}   {mark[0]}\n    ◇"
+
+
+# ----------------------------------------------------------------------------- dugout (live games)
+
+
+def ordinal(n: int) -> str:
+    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+def pitch_text(event: Mapping[str, object]) -> str:
+    """'95.4 mph slider, down - swinging strike (1-2)'."""
+    from mlb_manager.tactics import PITCH_TYPES
+
+    code = str(event.get("pt", "FF"))
+    pitch = PITCH_TYPES[code].name if code in PITCH_TYPES else code
+    actual = str(event.get("x", ""))
+    in_zone = bool(event.get("z"))
+    if in_zone and actual in ("chase", "wild", "waste"):
+        where = "catching the corner"
+    elif not in_zone and actual in ("heart", "mistake", "edge", "up", "down"):
+        where = "just off the plate"
+    else:
+        where = LOCATION_TEXT.get(actual, "")
+    result = PITCH_RESULT_TEXT.get(str(event["r"]), str(event["r"]))
+    balls, strikes = (event.get("c") or [0, 0])  # type: ignore[misc]
+    if strikes >= 3:
+        result = {"called": "called strike three", "swinging": "swinging strike three",
+                  "bunt_foul": "foul bunt, strike three", "bunt_miss": "missed bunt, strike three"}.get(
+                      str(event["r"]), "strike three")
+        tail = ""
+    elif balls >= 4:
+        result, tail = "ball four", ""
+    elif event["r"] in ("inplay", "bunt", "hbp"):
+        tail = ""
+    else:
+        tail = f" ({balls}-{strikes})"
+    return f"{float(event.get('v', 0)):.0f} mph {pitch} {where} - {result}{tail}"  # type: ignore[arg-type]
+
+
+def diamond(league: League, bases: Sequence[int]) -> str:
+    """Diamond with the runners' names."""
+    def runner(pid: int) -> str:
+        return league.players[pid].last_name[:10] if pid and pid in league.players else ""
+
+    mark = ["◆" if pid else "◇" for pid in bases]
+    first, second, third = (runner(pid) for pid in bases)
+    return (f"{'':>11}{mark[1]} {second}\n"
+            f"{third:>10} {mark[2]}   {mark[0]} {first}\n"
+            f"{'':>11}⌂")
+
+
+def dots(filled: int, total: int) -> str:
+    return "●" * filled + "○" * (total - filled)
+
+
+def live_line_score(league: League, live: LiveGame) -> str:
+    sim = live.sim
+    innings = max(9, len(sim.away.box.line), len(sim.home.box.line))
+    headers = [""] + [str(i) for i in range(1, innings + 1)] + ["R", "H", "E"]
+    rows = []
+    for side in (sim.away, sim.home):
+        box = side.box
+        cells = [str(x) for x in box.line] + [""] * (innings - len(box.line))
+        rows.append([box.abbr, *cells, box.runs, box.hits, box.errors])
+    return table(headers, rows, "l" + "r" * (len(headers) - 1))
+
+
+def live_situation(league: League, live: LiveGame) -> str:
+    from mlb_manager.dugout import describe_phase
+
+    sim = live.sim
+    if sim.is_over:
+        result = sim.result
+        assert result is not None
+        return f"FINAL{f' ({result.innings})' if result.innings != 9 else ''}\n" + result_line(
+            league, result, league.user_team)
+    half = "Top" if sim.top else "Bot"
+    outs = min(sim.outs, 3)
+    bases = [r.player_id if r else 0 for r in sim.bases]
+    score = f"{sim.away.team.abbr} {sim.away.box.runs}  {sim.home.team.abbr} {sim.home.box.runs}"
+    return (f"{score}   {half} {ordinal(sim.inning)}\n"
+            f"{describe_phase(sim)}\n"
+            f"Outs {dots(outs, 3)}  B {dots(sim.balls, 4)} S {dots(sim.strikes, 3)}  {sim.balls}-{sim.strikes}\n"
+            f"{diamond(league, bases)}")
+
+
+def matchup_card(league: League, live: LiveGame) -> str:
+    sim = live.sim
+    if sim.is_over:
+        return ""
+    batter = sim.current_batter()
+    batting = sim.batting_side
+    pos = batting.order[batting.batter_index][1]
+    line = batting.box.batting[batter.id]
+    season = batter.batting
+    probs = sim.outcome_probabilities(batter, sim.current_pitcher(), sim.fielding_side)
+    obp = sum(probs[o] for o in ("BB", "HBP", "1B", "2B", "3B", "HR"))
+    status = live.pitcher_status()
+    p = status["player"]
+    pl = status["line"]
+    bar_len = 10
+    filled = int(round(status["stamina"] * bar_len))
+    rep = " ".join(f"{r.code}{r.grade}" for r in status["repertoire"])
+    pitches = status["pitches"]
+    return (f"AB {batter.short_name} ({batter.bats}) {pos} #{batting.batter_index + 1}  today {line.h}-{line.ab}\n"
+            f"   {fmt_avg(season.avg)}/{fmt_avg(season.obp)}/{fmt_avg(season.slg)} {season.hr} HR · "
+            f"xOBP {obp:.3f} K {probs['K']:.0%}\n"
+            f"P  {p.short_name} ({p.throws}) {pl.ip_display} IP {pl.h}H {pl.r}R {pl.bb}BB {pl.so}K\n"
+            f"   {pitches} pitch{'es' if pitches != 1 else ''} [{'█' * filled}{'░' * (bar_len - filled)}] "
+            f"{status['condition']}\n"
+            f"   {rep}")
+
+
+def fmt_avg(value: float) -> str:
+    return f"{value:.3f}".lstrip("0") if value < 1 else f"{value:.3f}"
+
+
+def live_feed(league: League, live: LiveGame, limit: int = 60) -> str:
+    events = live.sim.events or []
+    lines = [event_text(league, e) for e in events[-limit:]]
+    return "\n".join(reversed(lines)) or "Play ball!"
+
+
+def live_lineups(league: League, live: LiveGame) -> str:
+    sim = live.sim
+    out = []
+    for side in (live.user_side, live.opp_side):
+        batting_now = sim.batting_side is side and not sim.is_over
+        rows = []
+        for i, (pid, pos) in enumerate(side.order):
+            p = league.players[pid]
+            line = side.box.batting[pid]
+            mark = "▶" if batting_now and i == side.batter_index else " "
+            rows.append([f"{mark}{i + 1}", p.short_name, pos, p.bats, f"{line.h}-{line.ab}",
+                         p.rating("contact"), p.rating("power"), p.rating("speed")])
+        out.append(table([side.team.abbr, "Batter", "Pos", "B", "Today", "CON", "POW", "SPD"], rows,
+                         "rllllrrr"))
+        pitcher = league.players[side.pitcher_id]
+        defense = f"Defense {side.defense:.0f}   Catcher {side.catcher.short_name} (arm {side.catcher.rating('arm')})"
+        out.append(f"Pitching: {pitcher.short_name}   {defense}")
+        out.append("")
+    return "\n".join(out)
+
+
+def live_instructions(live: LiveGame) -> str:
+    from mlb_manager import tactics as tx
+    from mlb_manager.dugout import CATEGORIES, CATEGORY_LABELS, MODE_LABELS
+
+    ins = live.instructions
+    tb, pp, al = ins.batting, ins.pitching, ins.alignment
+    L = tx.LABELS
+    lines = [
+        "AUTOMATION  " + "  ".join(f"{CATEGORY_LABELS[c]}: {MODE_LABELS[live.settings[c]]}" for c in CATEGORIES),
+        f"HITTING     {L[tb.approach]} approach, {L[tb.aggression].lower()} swings, {L[tb.discipline].lower()} "
+        f"discipline, {L[tb.effort].lower()} effort ({len(ins.per_batter)} batter-specific)",
+        f"BASES       {L[tb.lead]} leads, {L[tb.advance].lower()} advancing",
+        f"PITCHING    {L[pp.effort]} effort, {L[pp.approach]}, {L[pp.sequencing]}, {L[pp.hook]}"
+        f"{', holding runners' if pp.hold_runners else ''} ({len(ins.pitch_vs)} matchup plans)",
+        f"DEFENSE     Infield {L[al.infield].lower()}, outfield {L[al.outfield].lower()}, {L[al.shift].lower()}, "
+        f"{L[al.aggression].lower()}",
+    ]
+    nxt = live.next_pitch
+    calls = []
+    if nxt.pitch_type:
+        calls.append(tx.PITCH_TYPES[nxt.pitch_type].name)
+    if nxt.location:
+        calls.append(L[nxt.location].lower())
+    for flag, label in ((nxt.intentional_ball, "intentional ball"), (nxt.pitchout, "pitchout"),
+                        (nxt.take, "take"), (nxt.bunt, "bunt"), (nxt.hit_and_run, "hit-and-run")):
+        if flag:
+            calls.append(label)
+    if nxt.steal:
+        calls.append("delayed steal" if nxt.steal == "delayed" else "steal")
+    if nxt.send:
+        calls.append(f"{nxt.send} runners")
+    lines.append("NEXT PITCH  " + (", ".join(calls) if calls else "-"))
+    return "\n".join(lines)
+
+
+def bullpen_text(league: League, live: LiveGame) -> str:
+    rows = [[r["player"].short_name, r["role"], r["throws"], r["rating"], r["fatigue"], r["rest"]]
+            for r in live.bullpen_report()]
+    status = live.pitcher_status(live.user_side)
+    head = (f"On the mound: {status['player'].short_name}  {status['pitches']} pitches, load "
+            f"{status['load']:.0f}/{status['limit']}, {status['condition']}, faced {status['faced']}")
+    return head + "\n\n" + table(["Bullpen", "Role", "T", "OVR", "Fatigue", "Status"], rows, "llrrrl")
+
+
+def scouting_text(league: League, live: LiveGame) -> str:
+    rows = [[r["player"].short_name, r["pos"], f"{r['pull']:.2f}", r["power"], r["contact"], r["eye"], r["speed"],
+             (r["note"] + (f"; {r['threat']}" if r["threat"] else ""))] for r in live.opponent_tendencies()]
+    out = [table([f"{live.opp_side.team.abbr} hitters", "Pos", "Pull", "POW", "CON", "EYE", "SPD", "Tendency"],
+                 rows, "llrrrrrl")]
+    pitcher = league.players[live.opp_side.pitcher_id]
+    from mlb_manager import tactics as tx
+
+    rep = ", ".join(f"{r.name} {r.grade} ({r.usage:.0%})" for r in tx.repertoire(pitcher))
+    out.append("")
+    out.append(f"Their pitcher {pitcher.short_name}: {rep}")
+    up = live.upcoming_hitters(4)
+    out.append("")
+    out.append(table(["Due up", "Pos", "Today", "OBP*", "K*", "HR*"],
+                     [[f"{r['slot']}. {r['player'].short_name}", r["pos"], r["today"], f"{r['obp']:.3f}",
+                       f"{r['k']:.0%}", f"{r['hr']:.1%}"] for r in up], "llrrrr"))
+    out.append("* expected vs the current pitcher")
+    fat = live.fatigue_report()
+    out.append("")
+    out.append(table(["Your lineup", "Pos", "Fatigue", "Morale", "Health"],
+                     [[r["player"].short_name, r["pos"], r["fatigue"], r["morale"],
+                       r["injury"] or ("rusty" if r["rust"] else "ok")] for r in fat], "llrrl"))
+    return "\n".join(out)
+
+
+def decision_text(league: League, live: LiveGame, decision: Decision) -> str:
+    events = live.sim.events or []
+    half = "T" if decision.top else "B"
+    a = decision.assessment
+    grade = f"[{a.grade}] " if a else ""
+    result = ""
+    if decision.result is not None and decision.result < len(events):
+        result = " => " + event_text(league, events[decision.result]).split(": ", 1)[-1]
+    return (f"{half}{decision.inning} {decision.outs} out, {decision.count[0]}-{decision.count[1]}, "
+            f"{decision.score[0]}-{decision.score[1]}  {decision.text}  ({decision.source}) {grade}"
+            f"{(a.basis if a else '')}{result}")
+
+
+def decision_log(league: League, live: LiveGame, limit: int = 60) -> str:
+    rows = [decision_text(league, live, d) for d in live.decisions[-limit:]]
+    return "\n".join(reversed(rows)) or "No managerial decisions yet."
+
+
+def manager_report(report: Mapping[str, object] | None) -> str:
+    """Post-game managerial summary."""
+    from mlb_manager.dugout import CATEGORIES, CATEGORY_LABELS
+
+    if not report:
+        return "No managerial report (the game was simulated automatically)."
+    cats = report["categories"]  # type: ignore[index]
+    rows = []
+    for c in CATEGORIES:
+        r = cats[c]  # type: ignore[index]
+        if not r["count"]:
+            continue
+        rows.append([CATEGORY_LABELS[c], r["count"], r["manual"], r["auto"] + r["forced"], r["assisted"],
+                     r["favourable"], r["neutral"], r["unfavourable"], f"{r['expected_runs']:+.2f}"])
+    out = [f"Managerial report: {report['decisions']} decisions, {report['manual']} made by you."]
+    if rows:
+        out.append(table(["Category", "Dec", "You", "CPU", "Asst", "Fav", "Neu", "Unfav", "xRuns"], rows,
+                         "lrrrrrrrr"))
+    out.extend(str(n) for n in report.get("notes", []))  # type: ignore[attr-defined]
+    out.append(str(report.get("method", "")))
+    log = report.get("log", [])  # type: ignore[attr-defined]
+    if log:
+        out.append("")
+        out.append("Decision log")
+        for d in log[-25:]:
+            a = d.get("assessment") or {}
+            out.append(f"  {'T' if d['top'] else 'B'}{d['inning']} {d['outs']} out  {d['text']} ({d['source']})"
+                       + (f" [{a.get('grade')}] {a.get('basis')}" if a else ""))
+    return "\n".join(out)
