@@ -30,6 +30,7 @@ presentation layer.
 | `playoffs.py` | 12-team bracket (WC bo3, DS bo5, CS bo7, WS bo7) |
 | `league.py` | `League` aggregate: day advancement, phases, results, leaders |
 | `persistence.py` | Versioned JSON save/load (atomic writes) |
+| `views.py` | Pure text rendering (tables, box scores, standings, cards) |
 | `cli.py` | Interactive terminal UI (injectable input/output for tests) |
 | `main.py` | argparse entry point (`mlb-manager` console script) |
 
@@ -40,6 +41,13 @@ presentation layer.
 - Never use the global `random` module state in simulation code.
 - Same seed + same manager decisions => identical results, including after a
   save/load round trip.
+
+## Testing notes
+- `tests/test_cli.py` drives the UI with a `ScriptedIO` helper (scripted
+  answers; EOF ends the session) – extend it when adding menus.
+- Full-season tests take a few seconds each; the whole suite runs in ~30 s.
+- Sim calibration targets (MLB-like): ~4.2–4.5 R/G, ~1.1 HR/G, ~.245 AVG.
+  Re-check with `--simulate-season` after touching `game.py` constants.
 
 ## Conventions
 - Ratings use a 1–99 scale (50 = MLB average).
