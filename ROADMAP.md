@@ -132,7 +132,6 @@ financial realism.
 
 ## Later
 - [ ] Hall of Fame; no-trade clauses
-- [ ] Optional luxury tax (soft cap) as an alternative cap mode
 - [ ] Trade block and "what would it take?" asking-price feature
 - [ ] Tighter schedule packing (≈186 days), higher stolen-base volume
 
@@ -153,7 +152,29 @@ financial realism.
 - [x] Decision log with ex-ante assessments; post-game managerial report
 - [x] Textual dugout console and classic CLI dugout; mid-game save/load
 
+## Milestone 8 – League financial rules & setup ✅ v0.9.0
+- [x] Centralised, season-aware rules engine (`finance.py`): rule eras per save, Standard MLB
+      CBA table (2017–2021, 2022–2026; provisional carry-forward after the Dec 1, 2026 expiry),
+      custom rules; proposed CBA terms kept separate and never applied
+- [x] Salary cap: none (default) / soft (configurable exceptions + penalty) / hard; editable amount
+- [x] Optional salary floor with season-end shortfall charge
+- [x] Competitive Balance Tax independent of the cap: $244M (2026), 20/30/50% consecutive-year rates,
+      surcharge tiers, reset after a season under, $40M+ draft-pick penalty; CBT payroll from
+      prorated contract AAV + dead money + player benefits
+- [x] Revenue sharing, club revenues and an end-of-season financial ledger
+- [x] Season-aware league minimum ($780,000 in 2026) with automatic lifts
+- [x] MLB-scale salaries, back-loaded long contracts (AAV ≠ cash), arbitration for players
+      short of six service years
+- [x] One transaction gate for free agency, re-signing, extensions, arbitration, trades,
+      the draft and depth signings, with clear violations and tax consequences
+- [x] CPU owners' budgets (market, revenue sharing, strategy; tax-aware)
+- [x] New-league setup (season, Standard MLB / custom rules, validation, summary) in GUI and CLI;
+      load review with rule editing and impact preview; `--season` option
+- [x] Save format v5 with safe v1–v4 migration (MLB defaults, legacy cap remembered)
+
 ## Next candidates
+- [ ] Multi-year arbitration/salary negotiation and player options; qualifying offers
+- [ ] More CBT payors: richer free-agent bidding between big-market clubs
 - [ ] Wild pitches, passed balls and balks; mound visits; double switches
 - [ ] Mid-play send/hold decision point on extra-base attempts
 - [ ] Optional live management of postseason series with series-level plans

@@ -4,8 +4,9 @@ A terminal-based baseball franchise management game. Pick one of the 30 MLB
 franchises, manage a roster of fictional generated players, set lineups and
 pitching staffs, simulate a 162-game season, and chase a championship through
 a 12-team postseason. As general manager you also draft prospects, make
-trades, sign free agents and manage contracts under a salary cap, building a
-contender over many seasons. Franchises are saved as JSON files.
+trades, sign free agents and manage contracts under configurable league
+financial rules (MLB-style Competitive Balance Tax by default, or a salary cap
+and floor of your choosing), building a contender over many seasons. Franchises are saved as JSON files.
 
 Python 3.12+. The simulation engine uses only the standard library; the
 interactive interface is built with [Textual](https://textual.textualize.io/).
@@ -50,7 +51,8 @@ Other ways to launch:
 .venv/bin/mlb-manager --load saves/nyy_2026.json     # resume a franchise
 .venv/bin/mlb-manager --save-dir ~/mlb-saves         # custom save folder
 .venv/bin/mlb-manager --simulate-season --seed 7     # headless full season
-.venv/bin/mlb-manager --new --team KC --salary-cap 110  # tighter salary cap
+.venv/bin/mlb-manager --new --team KC --salary-cap 180  # custom hard salary cap ($M)
+.venv/bin/mlb-manager --new --team KC --season 2024     # start in an earlier season
 .venv/bin/mlb-manager --cli                          # classic numbered-menu interface
 ```
 
@@ -144,10 +146,22 @@ change a pitch that has already been thrown.
 
 ### Front office
 
-- **Contracts & cap** – every player has a salary and years remaining. Free-agent
-  signings and trades must fit under the cap (default $125M) unless they reduce
-  payroll; re-signing your own players may exceed it. Released players' salary
-  stays on this season's books as dead money.
+- **League setup** – *New franchise* opens a setup screen: starting season and
+  the league's financial structure. *Standard MLB rules* (the default) means no
+  salary cap or floor, a Competitive Balance Tax ($244M threshold in 2026;
+  20% / 30% / 50% for consecutive seasons over, surcharges, a draft-pick
+  penalty), revenue sharing and the $780,000 minimum salary of the season.
+  *Custom financial rules* let you choose no cap, a soft cap (exceptions and a
+  penalty) or a hard cap, a salary floor, the tax and revenue sharing.
+  *Load franchise* shows a save's rules first and lets you edit them; nothing in
+  the save (contracts, payrolls, history) is reset. See
+  [docs/financial-rules.md](docs/financial-rules.md).
+- **Contracts & payroll** – every player has a salary (contracts of 3+ years are
+  back-loaded around their average annual value) and years remaining. Every
+  signing, extension, arbitration contract and trade is checked against the
+  league's rules, with violations and tax consequences spelled out. Players
+  short of six service years are arbitration-eligible when their deal ends.
+  Released players' salary stays on this season's books as dead money.
 - **Trades** – combine up to five players and/or draft picks per side (pick codes
   look like `2027-R1-NYY`). Each club judges a deal by its own needs: projected
   ability and growth (as *its* scouts see it), age, position, contract and years

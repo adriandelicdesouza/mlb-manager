@@ -34,7 +34,8 @@ presentation layer.
 | `schedule.py` | 162-game balanced schedule generation |
 | `standings.py` | Standings, tiebreakers, games back, playoff seeding |
 | `playoffs.py` | 12-team bracket (WC bo3, DS bo5, CS bo7, WS bo7) |
-| `contracts.py` | Salaries, asking contracts, payroll, cap rules, commitments |
+| `contracts.py` | Market salaries (MLB scale), contract structures (AAV, back-loaded cash), arbitration salaries, payroll, commitments |
+| `finance.py` | League financial rules engine: season-aware rule eras (Standard MLB CBA table / custom), cap & floor, Competitive Balance Tax, revenue sharing, transaction checks, CPU budgets, daily CBT accrual, season settlement |
 | `development.py` | Potential, growth/decline, retirement, imperfect scouting |
 | `draft.py` | Draft picks, class generation, draft order, CPU draft boards |
 | `frontoffice.py` | Club strategy, best-26 org management, init/migration; `player_value` entry point |
@@ -50,7 +51,7 @@ presentation layer.
 | `persistence.py` | Versioned JSON save/load (atomic writes) |
 | `views.py` | Pure text rendering (tables, box scores, standings, cards) |
 | `cli.py` | Classic numbered-menu terminal UI (injectable input/output for tests) |
-| `tui/` | Textual GUI: `app.py` (screens, sim worker, files), `base.py` (pane base), `panes.py` (dashboard, roster, lineup, trades, draft, FA, season), `dugout.py` (Game tab / live dugout), `modals.py`, `theme.py` |
+| `tui/` | Textual GUI: `app.py` (screens, sim worker, files), `setup.py` (new-league setup, load review, rules editor), `base.py` (pane base), `panes.py` (dashboard, roster, lineup, trades, draft, FA, season), `dugout.py` (Game tab / live dugout), `modals.py`, `theme.py` |
 | `main.py` | argparse entry point (`mlb-manager` console script) |
 
 ## Determinism
@@ -81,6 +82,22 @@ presentation layer.
   Use `careers.*` helpers for career totals (they add the live season once).
 - Game-day form (morale, rust) is applied through `League.game_players()`
   (adjusted copies); never mutate stored ratings for temporary effects.
+- Financial rules live only in `finance.py` (see `docs/financial-rules.md`).
+  Never compare payroll to a cap, floor or threshold elsewhere: call
+  `finance.check_transaction(league, team, kind, added, ...)` for every move that
+  changes payroll (raise its `reason` when not `allowed`, surface `warnings`),
+  `finance.fits_budget`/`cpu_can_add` for CPU spending, and
+  `finance.min_salary(league)` / `finance.rules(league)` instead of constants.
+  Rules are per league and per season (`FinanceConfig` eras); in the offseason
+  transactions count toward `finance.contract_season(league)` (= next season).
+  Proposed CBA terms (`PROPOSED_TERMS`) are informational and must never be
+  applied as rules. Changing a running league's rules goes through
+  `finance.change_rules()` and must never touch contracts or history.
+- Salaries are MLB scale (`contracts.MARKET_SCALE`); valuation stays in its
+  pre-v0.9 value units by dividing salaries by `MARKET_SCALE`, so trade and FA
+  tolerances are unchanged. `Player.salary` is current-season cash;
+  `contracts.aav()` is the CBT measure; use `contracts.sign()` (structure) and
+  `contracts.salary_in()` for future years.
 - `scripts/league_health.py [seasons] [seed]` checks long-run balance
   (talent drift, payrolls, population, roster validity). Run it after
   touching development, contracts or CPU behaviour.
@@ -99,6 +116,8 @@ presentation layer.
   touching `tactics.py`, compare live-auto vs classic rates over a few hundred
   matched games (R/G, HR/G, AVG, K%, BB%).
 - Engine moves raise `RuleError` (a `ValueError`) with a user-facing reason.
+- Season settlement (`finance.settle_season`) runs once, when the World Series
+  ends; CBT accrual runs once per regular-season day (`finance.accrue_day`).
 - Prompt checks must not consume randomness; CPU decisions use the session's
   own `dugout` RNG stream so games replay identically given the same decisions.
 
@@ -111,6 +130,10 @@ presentation layer.
 - Full-season tests take ~6 s each; the whole suite runs in ~300 s.
 - `tests/test_dugout.py` builds live games straight from `generate_rosters`
   (`live_game()` helper) and steps them with `advance_to(...)`.
+- `tests/test_finance.py` covers caps, floors, CBT, revenue sharing, arbitration,
+  persistence and legacy migration; `tests/helpers.set_rules()/hard_cap()` give
+  a league custom rules. New-league CLI scripts need a setup answer (`"1"` =
+  start) after the seed, and loads a review answer (`"1"` = continue).
 - `tests/test_tui.py` drives the GUI with Textual's `run_test()` pilot (clicks,
   keys, resize) and asserts on league state; use `await app.workers.wait_for_complete()`
   after simulation actions (they run in a worker thread).

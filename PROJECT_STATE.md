@@ -1,8 +1,26 @@
 # Project State
 
-_Last updated: 2026-11-08 · Version 0.8.0 (interactive in-game management)_
+_Last updated: 2026-11-08 · Version 0.9.0 (league financial rules & setup)_
 
 ## Status
+**v0.9.0 makes league finances configurable and MLB-accurate by default.** A new
+rules engine (`finance.py`) owns every money rule: no salary cap / soft cap /
+hard cap, an optional salary floor, the Competitive Balance Tax (independent of
+any cap, consecutive-year rates, surcharges, reset, draft-pick penalty), revenue
+sharing and the season's league minimum. Rules are stored per league save as
+season "eras": Standard MLB rules come from a CBA table (2017–2026, with the
+2026 terms carried forward provisionally after the CBA's December 1, 2026
+expiry; MLB's proposed 2028 cap and floor are listed as *not adopted* and never
+applied), or custom rules. *New franchise* opens a setup screen (season, preset,
+custom rules with validation, summary); *Load franchise* shows the save's rules
+and lets you edit them with a preview of the consequences. Salaries are now
+MLB-scale with back-loaded long contracts (AAV vs cash), players short of six
+service years are arbitration-eligible, CPU owners spend against tax-aware
+budgets, and every season ends with a financial settlement (revenue, revenue
+sharing, CBT, penalties). Save format v5; older saves migrate to the standard
+MLB rules of their season with their data untouched.
+
+### v0.8.0 recap
 **v0.8.0 lets the manager run games from the dugout, pitch by pitch.** The game
 engine is now an incremental state machine: CPU games keep the classic
 plate-appearance resolution (identical results to v0.6), while the user's
@@ -55,7 +73,8 @@ league system. All 30 clubs participate in every system.
 | Area | Module | Notes |
 | --- | --- | --- |
 | Simulation core | `game.py`, `schedule.py`, `standings.py`, `playoffs.py` | Unchanged from v0.1 (engine preserved) |
-| Contracts & cap | `contracts.py` | Market salary curve; asking contracts; hard cap for FA/trades; own re-signs may exceed it; dead money on release; commitments |
+| Contracts | `contracts.py` | MLB-scale market salary curve (`MARKET_SCALE` 1.9); AAV + back-loaded cash schedules; arbitration salaries; dead money on release; cash commitments |
+| Financial rules | `finance.py` | Rule eras per save (Standard MLB CBA table / custom); cap none/soft/hard, floor, CBT (AAV accrual, rates, surcharges, reset, draft penalty), revenue sharing, minimum salary; `check_transaction` gate; CPU budgets; season settlement & ledger; rule changes with impact preview |
 | Development | `development.py` | Potential, fast/normal/slow growth, breakouts/busts, decline after 31, retirements, noisy scouting (own org more accurate) |
 | Draft | `draft.py` | 5 rounds × 30, 200-prospect classes (~48% pitchers, ages 18/21/22), worst-first order with playoff clubs last, tradable picks 3 years out, CPU boards by strategy |
 | Front office | `frontoffice.py` | Strategy assignment, player/pick valuation, best-26 optimisation, depth fill, cut-down to 45, initialisation/migration |
@@ -67,6 +86,33 @@ league system. All 30 clubs participate in every system.
 | Awards | `awards.py` | Value formulas from stats: MVP, Cy Young, ROY (service 0), Gold Glove (≥81 games at position; P), Silver Slugger (main position) |
 | Milestones | `seasonlog.py` | 30/40/50/60 HR, 100/125/150 RBI, 200 H, 40/60 SB, 15/20 W, 200/250/300 K, 40/50 SV, no-hitters, clinches, eliminations, 10-game streaks |
 | UI | `cli.py`, `views.py`, `main.py` | Franchise menu item 14 "Front Office": Contracts & Payroll, Trade Center, Free Agency, Draft, Minor League / Prospects, Transactions; offseason steps under SIMULATE; `--salary-cap` |
+
+## Verified results (v0.9.0)
+- **Test suite: `Ran 309 tests in ~331 s — OK`** (`PYTHONPATH=src .venv/bin/python -m unittest discover -s tests`).
+  New `test_finance.py` (30): MLB defaults and season-specific terms (2017, 2022, 2024–2026),
+  provisional carry-forward after 2026 with proposals not applied, a future CBA as a table
+  entry, eras, starting season and minimum-salary lifts, money/rate parsing, formatting and
+  validation, CBT bills (base rates, 2022 and 2017 surcharges, draft trigger), consecutive
+  violations 20→30→50→50→reset→20, CBT payroll from prorated AAV + benefits, draft penalty
+  in a real draft, unlimited payroll without a cap, hard cap (FA, extension, re-signing,
+  arbitration, trades both ways, exempt draft signing), soft cap (min-salary, own-player and
+  trade-matching exceptions; exceptions switched off; penalty), floor (initial shaping, warning,
+  settlement charge), CPU FA under a hard cap, market budgets with and without revenue
+  sharing, revenue-sharing settlement, arbitration terms, config/state round trip incl. accruals,
+  load + modify without touching contracts/history, offseason change starting next season,
+  v4 legacy migration. CLI (2): custom-rules setup with an invalid amount, load review → edit →
+  apply → League finances. GUI (2 new, 3 updated): setup screen (read-only MLB form, season
+  switch, custom hard cap, conditional inputs, validation), load review → rules editor → confirm,
+  Season Center Finances tab.
+- `scripts/league_health.py 6 11` (new economy; not comparable to v0.8 output by design):
+  active OVR 53.4 → 55.2, R/G 4.02–4.19, payroll min/median/max $66–80M / $120–141M /
+  $236–257M, 1–2 CBT payors per season (BOS paid 20% → 30% → 50% over three straight
+  seasons; LAD reset after a season under), six different champions, 1–10 CPU trades per
+  season, every roster valid every season; ≈7.4–8.1 s per season.
+- Headless season `--simulate-season --seed 7` ≈ 7.4 s. The classic game engine is untouched
+  (no engine file changed); league results differ from v0.8 because front-office decisions do.
+- Rendered GUI checks (120×60, 100×30): setup screen with soft-cap inputs and summary;
+  load review of a migrated v4 save with the legacy-cap note.
 
 ## Verified results (v0.8.0)
 - **Test suite: `Ran 275 tests in ~302s — OK`** (`.venv/bin/python -m unittest discover -s tests`).
@@ -205,7 +251,17 @@ league system. All 30 clubs participate in every system.
 - Mid-season transactions credit a player's games to the club he was with when
   they were played; the lineup "games by position" is still per season.
 - Milestones list is capped at 250 per season; news feed shows the latest 60 items.
-- Luxury tax not implemented (hard cap only; re-signing exception).
+- Financial model simplifications: revenues are a deterministic market-index model; CBT
+  proceeds are not redistributed; player benefits are a flat approximate charge; the
+  draft-pick penalty only moves the first-round pick; caps/floors measure cash payroll while
+  the CBT measures AAV; no deferred money, options or bonuses; dead money covers only the
+  current season. Fewer clubs pay the CBT than in real MLB (1–2 vs ~5–9 per season) because
+  CPU free agency signs at asking prices without bidding wars.
+- Arbitration is a one-year tender at a service-based share of market value (no hearings);
+  multi-year deals for arbitration-eligible players use the normal re-signing ask.
+- `--load FILE` on the command line skips the load review screen (use the title menu to
+  review/edit rules). Rule edits made while loading mark the league unsaved; the file on
+  disk changes only when you save.
 - User contract negotiation is take-it-or-leave-it for re-signings; free-agent
   offers allow 85–100 % of the ask with a deterministic chance.
 - Average active age drifts down slightly over many seasons.
