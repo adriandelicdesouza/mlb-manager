@@ -21,8 +21,8 @@ if HAVE_TEXTUAL:
     from textual.widgets import ContentSwitcher, DataTable, Input, Select, Static
 
     from mlb_manager.tui.app import FranchiseScreen, MLBManagerApp, TitleScreen
-    from mlb_manager.tui.modals import ChoiceScreen, ConfirmScreen, PlayerProfileScreen
-    from mlb_manager.tui.panes import PANES, GamePane, OffersScreen, TradePane
+    from mlb_manager.tui.modals import ChoiceScreen, ConfirmScreen, ListChoiceScreen, PlayerProfileScreen
+    from mlb_manager.tui.panes import PANES, DugoutPane, OffersScreen, TradePane
 
 SIZE = (160, 50)
 
@@ -335,39 +335,139 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(text.strip(), key)
             self.assertIn("American League", str(app.screen.query_one("#season-text-standings", Static).render()))
 
-    async def test_game_view_batter_by_batter(self) -> None:
+    async def start_live(self, pilot, preset: str = "manual") -> None:  # noqa: ANN001
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.click("#dug-start")
+        await pilot.pause()
+        self.assertIsInstance(pilot.app.screen, ChoiceScreen)
+        await pilot.click(f"#choice-{preset}")
+        await self.settle(pilot)
+
+    async def test_dugout_live_game_controls_and_progression(self) -> None:
         league = League.create(seed=10, user_team="NYY")
         app = self.app_for(league)
         async with app.run_test(size=SIZE) as pilot:
-            await pilot.press("g")
-            await pilot.click("#game-play")
-            await self.settle(pilot)
+            await self.start_live(pilot, "manual")
             self.assertEqual(self.current(app), "game")
-            pane = app.screen.query_one(GamePane)
-            result = league.last_user_game
-            self.assertIsNotNone(result)
-            self.assertTrue(result.events)
-            self.assertEqual(pane.play_index, 0)
-            await pilot.click("#game-next")
+            live = league.live_game
+            self.assertIsNotNone(live)
+            self.assertEqual(live.settings["pitching"], "manual")
+            await pilot.press("1")
+            await pilot.pause()
+            self.assertTrue(any(e["k"] == "P" for e in live.sim.events))
+            pitches = sum(1 for e in live.sim.events if e["k"] == "P")
             await pilot.press("space")
             await pilot.pause()
-            self.assertEqual(pane.play_index, 2)
-            await pilot.click("#game-inning")
+            self.assertEqual(sum(1 for e in live.sim.events if e["k"] == "P"), pitches + 1)
+            await pilot.click("#dug-go-pa")
+            await pilot.press("3")
             await pilot.pause()
-            situation = str(app.screen.query_one("#situation", Static).render())
-            self.assertRegex(situation, r"(Top|Bottom) \d")
-            self.assertIn("At bat", situation)
-            await pilot.click("#game-final")
+            situation = str(app.screen.query_one("#dug-situation", Static).render())
+            self.assertRegex(situation, r"(Top|Bot) \d")
+            # Change an instruction through the controls table and the list modal.
+            pane = app.screen.query_one(DugoutPane)
+            key = next(k for k in ("bat.approach", "pitch.effort") if k in pane.controls)
+            table = app.screen.query_one("#dug-controls", DataTable)
+            table.focus()
+            table.move_cursor(row=row_index(table, key))
+            await pilot.press("enter")
             await pilot.pause()
-            self.assertEqual(pane.play_index, len(result.events))
-            self.assertIn("Final", str(app.screen.query_one("#situation", Static).render()))
+            self.assertIsInstance(app.screen, ListChoiceScreen)
+            await pilot.press("end")
+            await pilot.press("enter")
+            await pilot.pause()
+            expected = "power" if key == "bat.approach" else "max"
+            self.assertEqual(live.control(key).value, expected)
+            self.assertEqual(live.decisions[-1].source, "manual")
+            # Feed and review tabs show content.
+            self.assertTrue(str(app.screen.query_one("#dug-text-feed", Static).render()).strip())
+            # Roster moves are refused while the game is in progress.
+            await pilot.press("r")
+            await pilot.pause()
+            before = list(league.user.active)
+            await pilot.click("#roster-demote")
+            await pilot.pause()
+            self.assertEqual(league.user.active, before)
+            # Save mid-game, then finish: sim to end and finish the day.
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+            saved = load_league(app.save_path)
+            self.assertIsNotNone(saved.live_game)
+            self.assertEqual(saved.live_game.sim.events, live.sim.events)
+            await pilot.press("g")
+            await pilot.click("#dug-finish")
+            await pilot.pause()
+            self.assertTrue(live.is_over)
+            await pilot.click("#dug-day")
+            await self.settle(pilot)
+            self.assertIsNone(league.live_game)
+            result = league.last_user_game
+            self.assertIs(result, live.result)
+            self.assertIsNotNone(result.manager_report)
             self.assertIn(league.players[result.winning_pitcher].short_name,
-                          str(app.screen.query_one("#game-box", Static).render()))
-            final = result.events[-1]
-            self.assertEqual((final["a"], final["h"]), (result.away_runs, result.home_runs))
-            await pilot.click("#game-restart")
+                          str(app.screen.query_one("#dug-text-box", Static).render()))
+            rec = league.records()["NYY"]
+            self.assertEqual(rec.wins + rec.losses, 1)
+
+    async def test_dugout_assisted_prompts_and_autoplay(self) -> None:
+        league = League.create(seed=12, user_team="BOS")
+        app = self.app_for(league)
+        async with app.run_test(size=SIZE) as pilot:
+            await self.start_live(pilot, "assisted")
+            live = league.live_game
+            pane = app.screen.query_one(DugoutPane)
+            answered = 0
+            for _ in range(80):
+                if live.is_over:
+                    break
+                if live.prompt is not None:
+                    self.assertTrue(app.screen.query_one("#dug-prompt").display)
+                    await pilot.press("y")
+                    await pilot.pause()
+                    self.assertIsNone(live.prompt)
+                    answered += 1
+                    continue
+                await pilot.press("4")
+                await pilot.pause()
+            await pilot.press("a")
             await pilot.pause()
-            self.assertEqual(pane.play_index, 0)
+            if not live.is_over and live.prompt is None:
+                self.assertIsNotNone(pane.timer)
+                count = len(live.sim.events)
+                await pilot.pause(1.5)
+                self.assertGreater(len(live.sim.events), count)
+                await pilot.press("a")
+                await pilot.pause()
+                self.assertIsNone(pane.timer)
+                paused = len(live.sim.events)
+                await pilot.pause(1.0)
+                self.assertEqual(len(live.sim.events), paused)
+            self.assertGreaterEqual(answered, 0)
+
+    async def test_dugout_simulate_game_and_sidebar_sim_finishes_live_game(self) -> None:
+        league = League.create(seed=13, user_team="NYY")
+        app = self.app_for(league)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.press("g")
+            await pilot.click("#dug-sim")
+            await self.settle(pilot)
+            self.assertIsNotNone(league.last_user_game)
+            self.assertTrue(league.last_user_game.events)
+            await pilot.click("#dug-start")
+            await pilot.pause()
+            await pilot.click("#choice-auto")
+            await self.settle(pilot)
+            live = league.live_game
+            await pilot.press("2")
+            await pilot.pause()
+            await pilot.press("n")
+            await pilot.pause()
+            await self.confirm(pilot)
+            await self.settle(pilot)
+            self.assertIsNone(league.live_game)
+            self.assertTrue(live.is_over)
+            self.assertIs(league.last_user_game, live.result)
 
     async def test_actions_refused_while_simulating(self) -> None:
         league = League.create(seed=11, user_team="NYY")

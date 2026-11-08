@@ -7,7 +7,6 @@ only UI state (current selection, filters); no game rules live here.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
 from textual.app import ComposeResult
@@ -19,79 +18,20 @@ from mlb_manager import contracts, development, freeagency, morale, roster, trad
 from mlb_manager import ratings as rt
 from mlb_manager.league import PHASE_DRAFT, PHASE_POSTSEASON, ContractError, League
 from mlb_manager.models import Player
+from mlb_manager.tui.base import Pane, fill_table, selected_key
+from mlb_manager.tui.dugout import DugoutPane
 from mlb_manager.tui.modals import ConfirmScreen, InputScreen, PlayerProfileScreen
 
 if TYPE_CHECKING:
     from mlb_manager.tui.app import MLBManagerApp
+
+__all__ = ["PANES", "DugoutPane", "Pane", "fill_table", "selected_key"]
 
 POSITIONS = ("SP", "RP", "C", "1B", "2B", "3B", "SS", "LF", "CF", "RF", "DH")
 
 
 def money(value: float) -> str:
     return f"${value:,.2f}M"
-
-
-class Pane(Vertical):
-    """Base class: access to the league and a uniform refresh hook."""
-
-    pane_title = ""
-
-    @property
-    def mlb(self) -> MLBManagerApp:
-        return cast("MLBManagerApp", self.app)
-
-    @property
-    def league(self) -> League:
-        league = self.mlb.league
-        assert league is not None
-        return league
-
-    def refresh_view(self) -> None:  # pragma: no cover - overridden
-        """Re-read the league and redraw."""
-
-    def done(self, message: str | None = None, severity: str = "information") -> None:
-        """Report the result of an action and refresh the whole app."""
-        self.mlb.after_change(message, severity)
-
-    def fail(self, message: str) -> None:
-        self.mlb.notify(message, severity="error", timeout=6)
-
-    def confirm(self, message: str, then: Callable[[], None], yes: str = "Confirm") -> None:
-        def callback(answer: bool | None) -> None:
-            if answer:
-                then()
-
-        self.mlb.push_screen(ConfirmScreen(message, yes=yes), callback)
-
-    def busy(self) -> bool:
-        if self.mlb.busy:
-            self.mlb.notify("Simulation in progress.", severity="warning")
-            return True
-        return False
-
-
-def selected_key(table: DataTable) -> str | None:
-    if table.row_count == 0:
-        return None
-    try:
-        key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
-    except Exception:  # noqa: BLE001 - empty or stale cursor
-        return None
-    return str(key.value) if key is not None and key.value is not None else None
-
-
-def fill_table(table: DataTable, columns: list[str], rows: list[tuple[str, list[Any]]]) -> None:
-    """Replace the table contents, keeping the cursor row where possible."""
-    keep = selected_key(table)
-    table.clear(columns=True)
-    table.add_columns(*columns)
-    for key, cells in rows:
-        table.add_row(*[str(c) for c in cells], key=key)
-    if keep is not None:
-        for index, (key, _) in enumerate(rows):
-            if key == keep:
-                table.move_cursor(row=index)
-                break
 
 
 def status_of(league: League, p: Player) -> str:
@@ -634,6 +574,10 @@ class OffersScreen(ModalScreen[None]):
             app.after_change("Offer rejected.")
             self.reload()
             return
+        if self.league.live_game is not None:
+            app.notify("A game is in progress in the dugout. Finish it before accepting a trade.",
+                       severity="warning")
+            return
 
         def accept(answer: bool | None) -> None:
             if not answer:
@@ -895,141 +839,6 @@ class SeasonPane(Pane):
             self.query_one(f"#season-text-{key}", Static).update(text)
 
 
-# ----------------------------------------------------------------------------- game view
-
-
-class GamePane(Pane):
-    """Batter-by-batter replay of the user's most recent game."""
-
-    pane_title = "Game"
-
-    def __init__(self, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self.play_index = 0
-        self.game_key: tuple[str, str, int, int] | None = None
-
-    def compose(self) -> ComposeResult:
-        yield Static("Game", classes="pane-title")
-        with Horizontal(id="game-top"):
-            yield Static("", id="scoreboard", markup=False, classes="panel")
-            yield Static("", id="situation", markup=False, classes="panel")
-        with Horizontal(classes="split"):
-            with VerticalScroll(classes="half"):
-                yield Static("", id="game-log", markup=False, classes="mono")
-            with VerticalScroll(classes="half"):
-                yield Static("", id="game-box", markup=False, classes="mono")
-        with Horizontal(classes="actions"):
-            yield Button("Next play", id="game-next", classes="act")
-            yield Button("Next inning", id="game-inning", classes="act")
-            yield Button("Final", id="game-final", classes="act")
-            yield Button("Replay", id="game-restart", classes="act")
-            yield Button("Play next game", id="game-play", classes="act")
-
-    def on_mount(self) -> None:
-        self.query_one("#scoreboard").border_title = "Scoreboard"
-        self.query_one("#situation").border_title = "Situation"
-
-    @property
-    def result(self) -> Any:
-        return self.league.last_user_game
-
-    def refresh_view(self) -> None:
-        result = self.result
-        if result is None:
-            self.query_one("#scoreboard", Static).update("Your club has not played yet.")
-            self.query_one("#situation", Static).update("Use 'Play next game' to play your next game.")
-            self.query_one("#game-log", Static).update("")
-            self.query_one("#game-box", Static).update("")
-            return
-        key = (result.away, result.home, result.away_runs, result.home_runs)
-        if key != self.game_key:
-            self.game_key = key
-            self.play_index = 0 if result.events else len(result.events)
-        self._draw()
-
-    def _draw(self) -> None:
-        lg, result = self.league, self.result
-        events = result.events
-        shown = events[: self.play_index]
-        final = not events or self.play_index >= len(events)
-        last = shown[-1] if shown else None
-        nxt = events[self.play_index] if self.play_index < len(events) else None
-        # Scoreboard: runs by inning so far.
-        innings = max(len(result.away_box.line), len(result.home_box.line))
-        if final:
-            board = views.line_score(lg, result)
-        else:
-            away = [""] * innings
-            home = [""] * innings
-            for ev in shown:
-                line = away if ev["top"] else home
-                slot = int(ev["i"]) - 1
-                line[slot] = str(int(line[slot] or 0) + int(ev["n"]))
-            # Innings already reached without runs show 0.
-            reached = int(last["i"]) if last else 1
-            for i in range(reached):
-                if away[i] == "":
-                    away[i] = "0"
-                if i < reached - 1 or (last and not last["top"]):
-                    home[i] = home[i] or "0"
-            a_runs = last["a"] if last else 0
-            h_runs = last["h"] if last else 0
-            board = views.table(["", *[str(i + 1) for i in range(innings)], "R"],
-                                [[result.away, *away, a_runs], [result.home, *home, h_runs]],
-                                "l" + "r" * (innings + 1))
-        self.query_one("#scoreboard", Static).update(board)
-        if final:
-            situation = f"Final{f' ({result.innings})' if result.innings != 9 else ''}\n" + views.result_line(
-                lg, result, lg.user_team)
-        else:
-            current = nxt or last
-            half = "Top" if current["top"] else "Bottom"
-            outs = int(last["o"]) if last and last["i"] == current["i"] and last["top"] == current["top"] else 0
-            outs = 0 if outs >= 3 else outs
-            state = last if last and last["i"] == current["i"] and last["top"] == current["top"] else None
-            batter = lg.players.get(int(nxt["p"])) if nxt and nxt["k"] == "PA" else None
-            pitcher = lg.players.get(int(nxt["pit"])) if nxt else None
-            situation = (f"{half} {current['i']}   {outs} out{'s' if outs != 1 else ''}\n"
-                         f"{views.bases_diagram(state)}\n"
-                         f"At bat:   {batter.name if batter else '-'}\n"
-                         f"Pitching: {pitcher.name if pitcher else '-'}")
-        self.query_one("#situation", Static).update(situation)
-        log_lines = [views.event_text(lg, ev) for ev in shown[-40:]]
-        self.query_one("#game-log", Static).update("\n".join(reversed(log_lines)) or "Play ball!")
-        self.query_one("#game-box", Static).update(views.box_score(lg, result) if final else
-                                                   "Box score appears at the end of the game.")
-        for bid in ("#game-next", "#game-inning", "#game-final"):
-            self.query_one(bid, Button).disabled = final
-
-    def step(self, mode: str) -> None:
-        result = self.result
-        if result is None:
-            return
-        events = result.events
-        if mode == "next":
-            self.play_index = min(len(events), self.play_index + 1)
-        elif mode == "inning":
-            start = events[self.play_index] if self.play_index < len(events) else None
-            self.play_index += 1
-            while start and self.play_index < len(events) and (
-                    events[self.play_index]["i"], events[self.play_index]["top"]) == (start["i"], start["top"]):
-                self.play_index += 1
-        elif mode == "final":
-            self.play_index = len(events)
-        elif mode == "restart":
-            self.play_index = 0
-        self._draw()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        event.stop()
-        action = event.button.id
-        if action == "game-play":
-            self.mlb.play_next_game()
-        else:
-            self.step({"game-next": "next", "game-inning": "inning", "game-final": "final",
-                       "game-restart": "restart"}[action or "game-next"])
-
-
 PANES: tuple[tuple[str, str, str, type[Pane]], ...] = (
     # (id, label, key, class)
     ("dashboard", "Dashboard", "d", DashboardPane),
@@ -1039,5 +848,5 @@ PANES: tuple[tuple[str, str, str, type[Pane]], ...] = (
     ("draft", "Draft room", "p", DraftPane),
     ("freeagents", "Free agents", "f", FreeAgencyPane),
     ("season", "Season center", "s", SeasonPane),
-    ("game", "Game", "g", GamePane),
+    ("game", "Game", "g", DugoutPane),
 )

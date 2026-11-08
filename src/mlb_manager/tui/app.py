@@ -39,7 +39,7 @@ from mlb_manager.persistence import (
 )
 from mlb_manager.tui import theme
 from mlb_manager.tui.modals import ChoiceScreen, ConfirmScreen, InputScreen
-from mlb_manager.tui.panes import PANES, GamePane, Pane, fill_table, selected_key
+from mlb_manager.tui.panes import PANES, DugoutPane, Pane, fill_table, selected_key
 
 # ----------------------------------------------------------------------------- title
 
@@ -130,7 +130,11 @@ class FranchiseScreen(Screen[None]):
           for pane_id, label, key, _ in PANES],
         Binding("n", "sim('day')", "Next day"),
         Binding("w", "sim('week')", "Next week", show=False),
-        Binding("space", "next_play", "Next play", show=False),
+        Binding("space", "next_play", "Next pitch", show=False),
+        *[Binding(key, f"dugout('{action}')", label, show=key in "123a") for key, action, label in (
+            ("1", "go:pitch", "Pitch"), ("2", "go:play", "Play"), ("3", "go:pa", "Batter"), ("4", "go:half", "Half"),
+            ("5", "go:inning", "Inning"), ("6", "go:game", "Final"), ("a", "auto", "Auto-play"),
+            ("y", "answer:0", "Accept"), ("x", "answer:1", "Decline"))],
         Binding("ctrl+s", "save", "Save"),
         Binding("q", "quit", "Quit"),
     ]
@@ -207,6 +211,7 @@ class FranchiseScreen(Screen[None]):
         advance.display = bool(label)
         advance.disabled = self.mlb.busy
         self.current_pane.refresh_view()
+        self.refresh_bindings()
 
     # -- actions ---------------------------------------------------------------------
 
@@ -219,7 +224,31 @@ class FranchiseScreen(Screen[None]):
 
     def action_next_play(self) -> None:
         if self.query_one("#main", ContentSwitcher).current == "game":
-            self.query_one(GamePane).step("next")
+            self.query_one(DugoutPane).action_go("pitch")
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Dugout keys only exist on the Game tab while a live game is in progress."""
+        if action == "dugout":
+            lg = self.mlb.league
+            try:
+                current = self.query_one("#main", ContentSwitcher).current
+            except Exception:  # noqa: BLE001 - not composed yet
+                return None
+            return True if current == "game" and lg is not None and lg.live_game is not None else None
+        return True
+
+    def action_dugout(self, command: str) -> None:
+        """Dugout keys work anywhere on the Game tab (the pane handles them when focused)."""
+        if self.query_one("#main", ContentSwitcher).current != "game":
+            return
+        pane = self.query_one(DugoutPane)
+        name, _, arg = command.partition(":")
+        if name == "go":
+            pane.action_go(arg)
+        elif name == "auto":
+            pane.action_autoplay()
+        elif name == "answer":
+            pane.action_answer(int(arg))
 
     def action_save(self) -> None:
         self.mlb.save()
@@ -365,12 +394,18 @@ class MLBManagerApp(App[None]):
 
     # -- simulation ------------------------------------------------------------------
 
-    def simulate(self, kind: str) -> None:
+    def simulate(self, kind: str, confirmed: bool = False) -> None:
         lg = self.league
         if lg is None or self.busy:
             return
         if lg.phase not in (PHASE_REGULAR, PHASE_POSTSEASON):
             self.notify("The season is over. Use the offseason button in the sidebar.", severity="warning")
+            return
+        if lg.live_game is not None and not lg.live_game.is_over and not confirmed:
+            self.push_screen(ConfirmScreen("A game is in progress in the dugout. Simulating will let the CPU "
+                                           "finish it with your current instructions. Continue?",
+                                           yes="Simulate"),
+                             lambda ok: ok and self.simulate(kind, confirmed=True))
             return
         self.busy = True
         self.refresh_franchise()
@@ -441,16 +476,81 @@ class MLBManagerApp(App[None]):
 
         self.run_worker(run, thread=True, exclusive=True, group="sim")
 
-    def _game_done(self, error: Exception | None) -> None:
+    def _game_done(self, error: Exception | None, message: str | None = None) -> None:
         self.busy = False
         self.dirty = True
         for screen in self.screen_stack:
             if isinstance(screen, FranchiseScreen):
-                pane = screen.query_one(GamePane)
-                pane.game_key = None
                 screen.action_show("game")
+                if self.league is not None and self.league.live_game is not None:
+                    screen.query_one("#dug-controls").focus()
         if error is not None:
             self.notify(f"Simulation failed: {error!r}", severity="error", timeout=10)
+        elif message:
+            self.notify(message, timeout=6)
+
+    # -- live games (dugout) ---------------------------------------------------------
+
+    def start_live_game(self) -> None:
+        """Ask for the automation level, play any off-days, then open the dugout."""
+        lg = self.league
+        if lg is None or self.busy:
+            return
+        if lg.live_game is not None:
+            self._game_done(None)
+            return
+        if lg.phase not in (PHASE_REGULAR, PHASE_POSTSEASON):
+            self.notify("No games until next season.", severity="warning")
+            return
+
+        def chosen(preset: str | None) -> None:
+            if preset is None:
+                return
+            self.busy = True
+            self.refresh_franchise()
+
+            def run() -> None:
+                error, message = None, None
+                try:
+                    lg.advance_to_user_game()
+                    if lg.user_game_today() is None:
+                        message = "Your club has no game coming up."
+                    else:
+                        live = lg.start_live_game()
+                        live.set_preset(preset)
+                        message = f"Play ball! {live.sim.away.team.abbr} @ {live.sim.home.team.abbr}."
+                except Exception as exc:  # noqa: BLE001
+                    error = exc
+                self.call_from_thread(self._game_done, error, message)
+
+            self.run_worker(run, thread=True, exclusive=True, group="sim")
+
+        self.push_screen(ChoiceScreen("How much do you want to manage? (You can change any category later.)",
+                                      [("assisted", "Assisted"), ("manual", "Full manual"),
+                                       ("auto", "Automatic")]), chosen)
+
+    def finish_live_day(self) -> None:
+        """Record the finished live game and play the rest of the day's games."""
+        lg = self.league
+        if lg is None or self.busy or lg.live_game is None:
+            return
+        self.busy = True
+        self.refresh_franchise()
+
+        def run() -> None:
+            error, message = None, None
+            try:
+                report = lg.finish_live_game()
+                result = lg.last_user_game
+                if result is not None:
+                    message = "Final: " + views.result_line(lg, result, lg.user_team)
+                if report.news:
+                    message = (message or "") + f"  ({len(report.news)} news item(s) on the dashboard)"
+            except Exception as exc:  # noqa: BLE001
+                error = exc
+            self.call_from_thread(self._game_done, error, message)
+
+        self.run_worker(run, thread=True, exclusive=True, group="sim")
 
     # -- offseason -------------------------------------------------------------------
 

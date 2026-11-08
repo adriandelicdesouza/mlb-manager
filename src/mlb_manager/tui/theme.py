@@ -209,15 +209,63 @@ ModalScreen {
 TitleScreen {
     align: center middle;
 }
-#game-top {
+#dug-top {
     height: auto;
 }
-#scoreboard {
+#dug-score {
     width: 1fr;
-    height: auto;
+    min-width: 30;
 }
-#situation {
-    width: 44;
+#dug-situation {
+    width: 38;
+}
+#dug-matchup {
+    width: 1fr;
+    min-width: 40;
+}
+#dug-prompt {
     height: auto;
+    border: round #a98f5a;
+    border-title-color: #d6b46b;
+}
+#dug-tabs {
+    width: 1fr;
+}
+#dug-controls-box {
+    width: 52;
+    padding: 0 0 0 1;
+}
+#dug-controls {
+    height: 1fr;
+}
+#dug-hint {
+    height: 3;
+}
+#dug-unit {
+    width: 18;
+    height: 1;
+    margin: 0 1 0 0;
+}
+#dug-unit > SelectCurrent {
+    border: none;
+    height: 1;
+    padding: 0 1;
+}
+#dug-situation {
+    min-width: 34;
+}
+FranchiseScreen.-narrow #dug-controls-box {
+    width: 36;
+}
+FranchiseScreen.-narrow #dug-score, FranchiseScreen.-narrow #dug-matchup {
+    display: none;
+}
+FranchiseScreen.-narrow #dug-situation {
+    width: 1fr;
+}
+#choice-list {
+    height: auto;
+    max-height: 20;
+    margin: 1 0 0 0;
 }
 """

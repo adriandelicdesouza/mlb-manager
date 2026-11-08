@@ -8,7 +8,8 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, Static, TabbedContent, TabPane
+from textual.widgets import Button, Input, Label, OptionList, Static, TabbedContent, TabPane
+from textual.widgets.option_list import Option
 
 from mlb_manager import contracts, development, views
 from mlb_manager import ratings as rt
@@ -65,6 +66,43 @@ class ChoiceScreen(ModalScreen[str | None]):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         event.stop()
         self.dismiss((event.button.id or "").removeprefix("choice-"))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ListChoiceScreen(ModalScreen[str | None]):
+    """Pick one option from a vertical list (Enter or click; Esc cancels)."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, title: str, options: list[tuple[str, str]], current: str | None = None,
+                 note: str = "") -> None:
+        super().__init__()
+        self.title_text = title
+        self.options = options
+        self.current = current
+        self.note = note
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog"):
+            yield Static(self.title_text, markup=False, classes="pane-title")
+            if self.note:
+                yield Static(self.note, markup=False, classes="hint")
+            yield OptionList(*[Option(("● " if key == self.current else "  ") + label, id=f"opt-{i}")
+                               for i, (key, label) in enumerate(self.options)], id="choice-list")
+
+    def on_mount(self) -> None:
+        olist = self.query_one(OptionList)
+        keys = [k for k, _ in self.options]
+        if self.current in keys:
+            olist.highlighted = keys.index(self.current)
+        olist.focus()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        event.stop()
+        index = int(str(event.option.id).removeprefix("opt-"))
+        self.dismiss(self.options[index][0])
 
     def action_cancel(self) -> None:
         self.dismiss(None)
