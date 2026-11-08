@@ -22,9 +22,6 @@ if TYPE_CHECKING:
     from mlb_manager.league import League
 
 STRATEGIES: tuple[str, ...] = ("contending", "balanced", "rebuilding")
-NOW_WEIGHT: dict[str, float] = {"contending": 0.75, "balanced": 0.55, "rebuilding": 0.3}
-PICK_STRATEGY_FACTOR: dict[str, float] = {"contending": 0.8, "balanced": 1.0, "rebuilding": 1.25}
-PICK_ROUND_VALUE: dict[int, float] = {1: 260.0, 2: 110.0, 3: 60.0, 4: 35.0, 5: 22.0}
 
 MAX_ORG = 45  # active + reserves
 MIN_ORG_PITCHERS = 13
@@ -80,10 +77,6 @@ def strength_ranks(league: League) -> dict[str, int]:
 # ----------------------------------------------------------------------------- valuation
 
 
-def _curve(overall: float) -> float:
-    return max(0.0, overall - 40.0) ** 1.7
-
-
 def incumbent_rating(team: Team, players: dict[int, Player], player: Player) -> float:
     if player.position == "SP":
         values = [players[pid].overall for pid in team.rotation if pid in players]
@@ -97,70 +90,26 @@ def incumbent_rating(team: Team, players: dict[int, Player], player: Player) -> 
     return 40.0
 
 
-def need_factor(league: League, player: Player, team: Team) -> float:
-    if player.team == team.abbr:
-        return 1.0
-    players = league.players
-    factor = 1.0
-    if player.overall > incumbent_rating(team, players, player) + 2:
-        factor *= 1.15
-    better = sum(
-        1
-        for pid in team.all_players
-        if players[pid].position == player.position and players[pid].overall >= player.overall
-    )
-    crowded = {"SP": 5, "RP": 7}.get(player.position, 2)
-    if better >= crowded:
-        factor *= 0.85
-    return factor
-
-
 def player_value(league: League, player: Player, team: Team) -> float:
     """Value of ``player`` to ``team`` (can be negative for bad contracts).
 
-    Considers current ability, potential, age, position, roster need,
-    contract surplus and the club's competitive strategy.
+    Single entry point for trades, re-signing priorities and cut-downs; the
+    model lives in :mod:`mlb_manager.valuation` (ability and potential
+    projections, age curve, position, performance, contract, competitive
+    window, roster fit and injuries).
     """
-    strategy = "balanced" if team.abbr == league.user_team else team.strategy
-    ovr, age = player.overall, player.age
-    now = _curve(ovr)
-    if age < 30:
-        peak = max(ovr, player.potential)
-        discount = 1.0 if age <= 23 else max(0.6, 1.0 - (age - 23) * 0.06)
-        future = _curve(peak) * discount
-    else:
-        future = now * max(0.0, (35 - age) / 6)
-    weight = NOW_WEIGHT[strategy]
-    value = weight * now + (1 - weight) * future
-    if player.position == "RP":
-        value *= 0.6
-    years = max(1, player.contract_years)
-    surplus = (contracts.market_salary(player) - player.salary) * min(years, 4)
-    value += surplus * 4
-    if strategy == "rebuilding" and age >= 30:
-        value -= player.salary * min(years, 4) * 2
-    if player.injury_days > 60:
-        value *= 0.5
-    elif player.injury_days > 20:
-        value *= 0.8
-    return value * need_factor(league, player, team)
+    from mlb_manager import valuation
+
+    return valuation.player_value(league, player, team)
 
 
 def pick_value(league: League, pick: DraftPick, team: Team, ranks: dict[str, int] | None = None) -> float:
-    strategy = "balanced" if team.abbr == league.user_team else team.strategy
-    draft = league.draft
-    if draft is not None and draft.year == pick.year and pick.original in draft.order:
-        slot = draft.order.index(pick.original)
-    else:
-        slot = (ranks or strength_ranks(league))[pick.original]
-    slot_factor = 1.4 - 0.7 * slot / 29
-    years_out = max(0, pick.year - league.draft_year)
-    return (
-        PICK_ROUND_VALUE[pick.round]
-        * slot_factor
-        * (0.9**years_out)
-        * PICK_STRATEGY_FACTOR[strategy]
-    )
+    from mlb_manager import valuation
+
+    val = valuation.Valuator(league)
+    if ranks is not None:
+        val._ranks = ranks
+    return val.pick(pick, team).total
 
 
 # ----------------------------------------------------------------------------- roster management
@@ -404,11 +353,14 @@ def release_player(league: League, team: Team, player_id: int) -> str:
 
 def cutdown(league: League, team: Team) -> list[str]:
     """Release the least valuable reserves until the organisation fits MAX_ORG."""
+    from mlb_manager import valuation
+
     notes = []
     while len(team.all_players) > MAX_ORG and team.reserves:
+        val = valuation.Valuator(league)
         worst = min(
             (league.players[pid] for pid in team.reserves),
-            key=lambda p: (player_value(league, p, team), p.id),
+            key=lambda p: (val.player(p, team).total, p.id),
         )
         notes.append(release_player(league, team, worst.id))
     return notes

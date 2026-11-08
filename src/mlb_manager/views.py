@@ -749,12 +749,25 @@ def proposal_view(league: League, prop: trades.TradeProposal) -> str:
     return "\n".join(lines)
 
 
+def contract_impact_view(league: League, prop: trades.TradeProposal) -> str:
+    """Payroll consequences for both clubs (public information)."""
+    rows = []
+    for impact in trades.contract_impact(league, prop):
+        future = " / ".join(f"{v:+.2f}" for v in impact.future_change)
+        rows.append([impact.team, contracts.money(impact.payroll_before), contracts.money(impact.payroll_after),
+                     f"{impact.change:+.2f}", contracts.money(impact.cap_space_after), future,
+                     f"{impact.years_in} in / {impact.years_out} out"])
+    return "Contract implications\n" + table(
+        ["Club", "Payroll now", "After", "Change", "Cap space", "Next 3 yrs ($M)", "Contract yrs"], rows, "lrrrrrl")
+
+
 def offers_view(league: League) -> str:
     if not league.trade_offers:
         return "No pending trade offers."
     out = []
     for offer in league.trade_offers:
-        out.append(f"Offer #{offer.offer_id} from {offer.proposal.team_a} (expires day {offer.expires_day + 1})")
+        reason = f" - {offer.reason}" if offer.reason else ""
+        out.append(f"Offer #{offer.offer_id} from {offer.proposal.team_a} (expires day {offer.expires_day + 1}){reason}")
         out.append(proposal_view(league, offer.proposal))
         out.append("")
     return "\n".join(out).rstrip()

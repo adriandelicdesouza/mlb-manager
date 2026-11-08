@@ -61,14 +61,18 @@ class FrontOfficeCliTests(unittest.TestCase):
         self.assertEqual(league.players[offer.id].team, "BOS")
 
     def test_counter_offer_flow(self) -> None:
+        from tests.test_trades import near_miss
+
         league = League.create(seed=21, user_team="NYY")
-        star = by_value(league, league.teams["BOS"])[0]
+        prop = near_miss(league, "BOS")
+        target = prop.b_players[0]
         text = self.run_app(league, [
-            "14", "2", "1", "BOS", "", f"{league.draft_year}-R2-NYY", str(star.id), "", "y",
+            "14", "2", "1", "BOS", str(prop.a_players[0]), "", str(target), "", "y",
             "0", "0", "0", "n", "0",
         ])
-        self.assertIn("BOS counters with:", text)
-        self.assertEqual(league.players[star.id].team, "NYY")
+        self.assertIn("BOS counters:", text)
+        self.assertIn("Contract implications", text)
+        self.assertEqual(league.players[target].team, "NYY")
 
     def test_invalid_trade_reported(self) -> None:
         league = League.create(seed=21, user_team="NYY")

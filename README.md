@@ -78,10 +78,15 @@ From the franchise menu you can:
   payroll; re-signing your own players may exceed it. Released players' salary
   stays on this season's books as dead money.
 - **Trades** – combine up to five players and/or draft picks per side (pick codes
-  look like `2027-R1-NYY`). Clubs value ability, potential, age, position, need,
-  contract and whether they are contending or rebuilding. If they say no they
-  may counter. CPU clubs also send you offers you can accept, reject or counter.
-  The trade deadline falls about two-thirds through the season.
+  look like `2027-R1-NYY`). Each club judges a deal by its own needs: projected
+  ability and growth (as *its* scouts see it), age, position, contract and years
+  of control, injuries, and whether it is contending or rebuilding. You see the
+  contract implications of every proposal and the club's reaction (accept,
+  close, far off) with hints, but not its internal numbers. Near misses get a
+  proportional counteroffer; lowball offers are simply refused, and repeating a
+  rejected offer gets you nowhere. CPU clubs trade among themselves to fix real
+  needs and send you offers with their motive. The trade deadline falls about
+  two-thirds through the season.
 - **Draft** – five rounds after each season, worst record picks first. Scouting
   grades are estimates: your own organisation is scouted more accurately.
 - **Free agency** – players with expiring deals hit the market in the offseason;

@@ -104,6 +104,8 @@ class League:
     retired: dict[int, RetiredPlayer] = field(default_factory=dict)  # permanent career records
     postseason_awards: list[dict[str, Any]] = field(default_factory=list)  # series MVPs, all years
     career_milestones: list[str] = field(default_factory=list)  # all-time career milestones
+    trade_memory: list[dict[str, Any]] = field(default_factory=list)  # user proposals and outcomes
+    trade_log: list[dict[str, Any]] = field(default_factory=list)  # executed trades (anti-flip, limits)
     _by_day: dict[int, list[ScheduledGame]] | None = field(default=None, repr=False)
     _pending_news: list[str] = field(default_factory=list, repr=False)
     _injury_teams: set[str] = field(default_factory=set, repr=False)
@@ -506,6 +508,8 @@ class League:
         offer = trades.generate_offer_for_user(self, rng)
         if offer is None:
             return []
+        if any(o.proposal.key() == offer.proposal.key() for o in self.trade_offers):
+            return []  # never repeat an identical pending offer
         self.trade_offers.append(offer)
         return [f"{offer.proposal.team_a} has made you a trade offer (Front Office > Trade Center)."]
 
@@ -1119,6 +1123,8 @@ class League:
             "retired": [r.to_dict() for r in self.retired.values()],
             "postseason_awards": list(self.postseason_awards),
             "career_milestones": list(self.career_milestones),
+            "trade_memory": list(self.trade_memory),
+            "trade_log": list(self.trade_log),
         }
 
     @classmethod
@@ -1155,6 +1161,8 @@ class League:
             retired={int(r["id"]): RetiredPlayer.from_dict(r) for r in data.get("retired", [])},
             postseason_awards=list(data.get("postseason_awards", [])),
             career_milestones=list(data.get("career_milestones", [])),
+            trade_memory=list(data.get("trade_memory", [])),
+            trade_log=list(data.get("trade_log", [])),
         )
 
 

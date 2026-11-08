@@ -1,8 +1,15 @@
 # Project State
 
-_Last updated: 2026-11-08 · Version 0.4.0 (player careers & franchise depth)_
+_Last updated: 2026-11-08 · Version 0.5.0 (trade intelligence)_
 
 ## Status
+**v0.5.0 replaces the CPU trade logic** with a centralised, team-specific
+valuation model (`valuation.py`) and a negotiation layer (`trades.negotiate`):
+per-side breakdowns, acceptable/borderline/unacceptable verdicts with
+configurable tolerances, proportional counteroffers, need-driven CPU trading
+and anti-exploit safeguards.
+
+### v0.4.0 recap
 **v0.4.0 adds player careers and franchise depth**: career statistics that
 follow players through trades and survive retirement, separate postseason
 statistics (per round, career and World Series totals) with LCS/WS MVPs,
@@ -40,6 +47,21 @@ league system. All 30 clubs participate in every system.
 | Awards | `awards.py` | Value formulas from stats: MVP, Cy Young, ROY (service 0), Gold Glove (≥81 games at position; P), Silver Slugger (main position) |
 | Milestones | `seasonlog.py` | 30/40/50/60 HR, 100/125/150 RBI, 200 H, 40/60 SB, 15/20 W, 200/250/300 K, 40/50 SV, no-hitters, clinches, eliminations, 10-game streaks |
 | UI | `cli.py`, `views.py`, `main.py` | Franchise menu item 14 "Front Office": Contracts & Payroll, Trade Center, Free Agency, Draft, Minor League / Prospects, Transactions; offseason steps under SIMULATE; `--salary-cap` |
+
+## Verified results (v0.5.0)
+- **Test suite: `Ran 231 tests in ~143s — OK`**. New `test_trade_intelligence.py` (18):
+  component sums, strategy priorities (relative and averaged over scouting noise),
+  contract/age/injury/deadline-rental effects, replacement-level scrubs worth ≤ 0,
+  identical evaluations incl. after save/load, quantity-for-quality, salary dumps,
+  talent floor, proportional counters that avoid core players, repeated-offer refusal
+  and fatigue, C/SP depth floors, contract impact, needs, CPU offers with motives, a full
+  season of CPU trades (volume, per-club limit, flip protection, reasons, valid rosters).
+- The reported TOR/LAD case (two 33/36-year-old fringe players for a 32-year-old
+  $16.55M one-year SP): a contending LAD refuses outright with no counter; a rebuilding
+  LAD (for whom the contract is a burden) asks only for a 4th-round pick and drops the
+  fringe players; a fair prospect offer to a contender draws a 2nd-round-pick counter.
+- `scripts/league_health.py 6 11`: active OVR 53.3 → 55.4, R/G 4.12–4.32, 4–12 CPU
+  trades per season, every roster valid; headless season ≈ 6.7–7.1 s.
 
 ## Verified results (v0.4.0)
 - **Test suite: `Ran 212 tests in ~124s — OK`**. New: `test_careers.py` (14: derived

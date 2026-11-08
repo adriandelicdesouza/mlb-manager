@@ -32,8 +32,9 @@ presentation layer.
 | `contracts.py` | Salaries, asking contracts, payroll, cap rules, commitments |
 | `development.py` | Potential, growth/decline, retirement, imperfect scouting |
 | `draft.py` | Draft picks, class generation, draft order, CPU draft boards |
-| `frontoffice.py` | Club strategy, player/pick valuation, best-26 org management, init/migration |
-| `trades.py` | Trade proposals, validation, evaluation, counters, CPU offers and CPU-CPU trades |
+| `frontoffice.py` | Club strategy, best-26 org management, init/migration; `player_value` entry point |
+| `valuation.py` | Centralised team-specific asset valuation (projections, contract, window, fit, picks) |
+| `trades.py` | Proposals, validation, per-side evaluation, negotiation/counters, CPU needs, offers and CPU-CPU trades |
 | `freeagency.py` | Free-agent market, offers, CPU signings |
 | `injuries.py` | Injury rolls, durability traits, injury history, IL moves, rehab assignments, rust, game-day substitutions (never mutate the saved lineup) |
 | `careers.py` | Career/postseason stats (per-club stints, archived history), leaderboards, franchise records, series MVPs |
@@ -56,9 +57,13 @@ presentation layer.
 
 ## Front-office rules of thumb
 - CPU logic lives in the domain modules; `cli.py` only calls `League`/module APIs.
-- Valuation (`frontoffice.player_value`) is the single source of truth for
-  trades, re-signing priorities and cut-downs; tune it rather than adding ad
-  hoc checks.
+- Valuation lives in `valuation.py` (`Valuator` caches club outlooks for one
+  decision pass; `frontoffice.player_value` delegates to it). It is the single
+  source of truth for trades, free agency and cut-downs; tune it rather than
+  adding ad hoc checks. Build a new `Valuator` after rosters change.
+- User trade proposals go through `trades.negotiate()` (validation, repeat
+  detection, evaluation, counter); UIs must not re-implement any of it.
+  Negotiation tolerances live in `trades.NegotiationTolerance`.
 - Keep CPU decisions deterministic: use `league._rng(<purpose>, ...)`.
 - Injured players must never reach `simulate_game`: always pass the team through
   `injuries.game_day_team()`; roster lists are active / reserves / injured_list

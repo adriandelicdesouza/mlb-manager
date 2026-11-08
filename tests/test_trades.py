@@ -14,6 +14,24 @@ def by_value(league, team, reverse=True):
     )
 
 
+def near_miss(league, cpu_abbr, user=None):  # noqa: ANN001
+    """A user offer that falls short but is close enough to draw a counter."""
+    user = user or league.user_team
+    cpu = league.teams[cpu_abbr]
+    targets = sorted(trades.tradable_players(league, cpu),
+                     key=lambda p: -frontoffice.player_value(league, p, cpu))[2:12]
+    offers = by_value(league, league.teams[user])[3:]
+    for target in targets:
+        for offer in offers:
+            prop = TradeProposal(user, cpu_abbr, a_players=[offer.id], b_players=[target.id])
+            if trades.validate(league, prop):
+                continue
+            verdict = trades.evaluate(league, prop)
+            if not verdict.accepted and not verdict.hopeless and trades.counter(league, prop):
+                return prop
+    raise AssertionError("no near-miss offer found")
+
+
 class TradeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.league = League.create(seed=21, user_team="NYY")
@@ -90,12 +108,20 @@ class TradeTests(unittest.TestCase):
 
     def test_counter_offer_is_acceptable(self) -> None:
         lg = self.league
-        star = by_value(lg, self.bos)[0]
-        prop = TradeProposal("NYY", "BOS", a_picks=[f"{lg.draft_year}-R2-NYY"], b_players=[star.id])
+        prop = near_miss(lg, "BOS")
         self.assertFalse(trades.evaluate(lg, prop).accepted)
         counter = trades.counter(lg, prop)
         self.assertIsNotNone(counter)
         self.assertTrue(trades.is_acceptable(lg, counter, "BOS"))
+
+    def test_lowball_for_star_gets_no_counter(self) -> None:
+        lg = self.league
+        star = by_value(lg, self.bos)[0]
+        prop = TradeProposal("NYY", "BOS", a_picks=[f"{lg.draft_year}-R5-NYY"], b_players=[star.id])
+        verdict = trades.evaluate(lg, prop)
+        self.assertEqual(verdict.verdict, trades.UNACCEPTABLE)
+        self.assertTrue(verdict.hopeless)
+        self.assertIsNone(trades.counter(lg, prop))
 
     def test_cap_blocks_taking_on_salary(self) -> None:
         lg = self.league

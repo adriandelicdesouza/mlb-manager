@@ -631,26 +631,29 @@ class App:
         lg = self.league
         self.say("")
         self.say(views.proposal_view(lg, prop))
-        errors = trades.validate(lg, prop)
-        if errors:
+        result = trades.negotiate(lg, prop)
+        if result.errors:
             self.say("Trade not allowed:")
-            for err in errors:
+            for err in result.errors:
                 self.say(f"  - {err}")
             return
-        verdict = trades.evaluate(lg, prop)
-        self.say(verdict.message)
-        if verdict.accepted:
+        self.say(views.contract_impact_view(lg, prop))
+        assert result.evaluation is not None
+        self.dirty = True  # negotiation history is part of the save
+        self.say(result.evaluation.message)
+        for reason in trades.describe_reasons(result.evaluation):
+            self.say(f"  - {reason}")
+        if result.accepted:
             if self.confirm("Complete this trade?"):
                 self.execute_trade(prop)
             return
-        alt = trades.counter(lg, prop)
-        if alt is None:
+        if result.counter is None:
             return
         self.say("")
-        self.say(f"{prop.team_b} counters with:")
-        self.say(views.proposal_view(lg, alt))
+        self.say(f"{prop.team_b} counters: {result.counter_note}")
+        self.say(views.proposal_view(lg, result.counter))
         if self.confirm("Accept the counter-offer?"):
-            self.execute_trade(alt)
+            self.execute_trade(result.counter)
 
     def execute_trade(self, prop: trades.TradeProposal) -> None:
         try:

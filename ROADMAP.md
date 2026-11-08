@@ -89,17 +89,26 @@ financial realism.
       retired players, career milestones, postseason and championship history
 - [x] Save format v4 with automatic v3→v4 migration
 
-## Milestone 5 – Trade intelligence (v0.5.0, next)
-- [ ] Centralised trade valuation (ability, potential, age, productive years, position
-      scarcity, performance, contract, development, replacement level, injuries)
-- [ ] Team-specific needs: positional depth, competitive window, payroll, pick inventory
-- [ ] Per-side fairness breakdown; acceptable / borderline / unacceptable with configurable tolerances
-- [ ] Proportional counteroffers sized to the actual shortfall; refuse hopeless offers
-- [ ] Need-driven CPU trades (contender buys, rebuilder sells, bullpen help, prospect surplus)
-- [ ] Anti-exploit safeguards (quantity-for-quality, salary dumps, expiring deals, depth
-      stripping, repeated offers, nonsensical CPU-CPU deals)
+## Milestone 5 – Trade intelligence ✅ v0.5.0
+- [x] Centralised valuation (`valuation.py`): year-by-year projections toward the club's
+      *scouted* potential, aging, performance blend, position scarcity, replacement level,
+      injuries/durability, salary and control years, re-signing rights
+- [x] Team-specific: competitive window (age-aware for rebuilders), positional need and
+      redundancy, essential starters/closer, cap pressure per season, pick inventory
+- [x] Per-side breakdown (asset, contract, strategic, roster fit, net);
+      acceptable / borderline / unacceptable via configurable `NegotiationTolerance`
+- [x] Counteroffers: drop unwanted pieces, ask for the cheapest non-core, non-redundant asset
+      that closes the gap (bounded by the shortfall), or hold back a CPU asset; hopeless
+      offers get a plain refusal
+- [x] Need-driven CPU trades (weak starters, injuries, rotation, bullpen; rebuilders sell
+      veterans; prospect-rich clubs buy), ≤3 per club per season, no quick flips, with reasons
+- [x] CPU offers to the user explain the motive; identical pending offers are never repeated
+- [x] Safeguards: diminishing returns + consolidation premium, talent floor on salary dumps,
+      deadline rentals priced by remaining season, C/SP depth floors, repeated-offer refusal and
+      negotiation fatigue, deterministic evaluations (also after save/load)
+- [x] Contract implications shown for every proposal
 
-## Milestone 6 – Interactive terminal GUI (v0.6.0)
+## Milestone 6 – Interactive terminal GUI (v0.6.0, next)
 - [ ] Textual-based app (mouse + keyboard) on top of the existing `League` API; classic CLI kept
 - [ ] Dashboard, roster table + player profile, lineup editing, promote/demote/release
 - [ ] Trade center, draft room, Season Center screens, compact game view (play-by-play replay)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from mlb_manager import contracts, frontoffice
+from mlb_manager import contracts, frontoffice, valuation
 from mlb_manager.models import Player, Team
 
 if TYPE_CHECKING:
@@ -82,7 +82,8 @@ def sign_free_agent(league: League, team: Team, player_id: int, salary: float, y
     return note
 
 
-def _cpu_wants(league: League, team: Team, player: Player, ask_salary: float) -> float | None:
+def _cpu_wants(league: League, team: Team, player: Player, ask_salary: float,
+               val: valuation.Valuator | None = None) -> float | None:
     """Score a free agent for a CPU club, or None if it should pass."""
     if player.overall <= frontoffice.incumbent_rating(team, league.players, player) + 1:
         return None
@@ -91,7 +92,7 @@ def _cpu_wants(league: League, team: Team, player: Player, ask_salary: float) ->
     space = contracts.cap_space(team, league.players, league.salary_cap)
     if ask_salary > space - CPU_CAP_BUFFER:
         return None
-    value = frontoffice.player_value(league, player, team)
+    value = (val or valuation.Valuator(league)).player(player, team).total
     return value / (1.0 + ask_salary * 0.05)
 
 
@@ -107,9 +108,10 @@ def cpu_signing_round(league: League) -> list[str]:
             continue
         market = free_agents(league)[:60]
         best: tuple[float, Player, float, int] | None = None
+        val = valuation.Valuator(league)
         for player in market:
             salary, years = asking(league, player)
-            score = _cpu_wants(league, team, player, salary)
+            score = _cpu_wants(league, team, player, salary, val)
             if score is not None and (best is None or score > best[0]):
                 best = (score, player, salary, years)
         if best is None:
