@@ -23,7 +23,7 @@ MAX_INNINGS = 30  # safety valve; extra-inning runner makes this practically unr
 BASE_K = 0.222
 BASE_BB = 0.077
 BASE_HBP = 0.011
-BASE_HR = 0.025
+BASE_HR = 0.026
 BASE_BABIP = 0.292
 
 RELIEVER_FRESH_FATIGUE = 15  # relievers above this fatigue are avoided
@@ -393,7 +393,7 @@ class GameSimulator:
         k = BASE_K * math.exp(0.016 * (stuff - contact) + 0.004 * framing)
         bb = BASE_BB * math.exp(0.016 * (eye - control) - 0.004 * framing)
         hbp = BASE_HBP * math.exp(-0.01 * (control - 50))
-        hr = BASE_HR * math.exp(0.026 * (power - 50) - 0.02 * (movement - 50))
+        hr = BASE_HR * math.exp(0.020 * (power - 50) - 0.02 * (movement - 50))
         k, bb, hbp, hr = min(k, 0.5), min(bb, 0.25), min(hbp, 0.03), min(hr, 0.12)
         in_play = max(0.15, 1.0 - k - bb - hbp - hr)
 
