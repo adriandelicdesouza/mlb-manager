@@ -13,24 +13,41 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from mlb_manager import roster
+from mlb_manager import contracts, development, freeagency, frontoffice, trades
+from mlb_manager import draft as draft_mod
+from mlb_manager.draft import Draft, DraftPick, DraftSelection
 from mlb_manager.franchises import LEAGUES, get_franchise
 from mlb_manager.game import GameResult, simulate_game
-from mlb_manager.generation import generate_rosters
+from mlb_manager.generation import PlayerFactory, generate_rosters
 from mlb_manager.models import Player, Team
 from mlb_manager.playoffs import Playoffs, Series, SeriesGame
-from mlb_manager.ratings import clamp_rating
 from mlb_manager.schedule import ScheduledGame, generate_schedule
 from mlb_manager.standings import TeamRecord, compute_records, playoff_seeds, rank
+from mlb_manager.trades import TradeOffer
 
 PHASE_REGULAR = "regular"
 PHASE_POSTSEASON = "postseason"
 PHASE_COMPLETE = "complete"
+PHASE_RESIGN = "resign"
+PHASE_DRAFT = "draft"
+PHASE_FREE_AGENCY = "free_agency"
+OFFSEASON_PHASES: tuple[str, ...] = (PHASE_RESIGN, PHASE_DRAFT, PHASE_FREE_AGENCY)
+PHASE_LABELS: dict[str, str] = {
+    PHASE_REGULAR: "Regular season",
+    PHASE_POSTSEASON: "Postseason",
+    PHASE_COMPLETE: "Season complete",
+    PHASE_RESIGN: "Offseason: re-signing period",
+    PHASE_DRAFT: "Offseason: amateur draft",
+    PHASE_FREE_AGENCY: "Offseason: free agency",
+}
 
 DEFAULT_YEAR = 2026
 DAILY_RECOVERY = 25
 STARTER_READY_FATIGUE = 20
 NEWS_LIMIT = 60
+TRANSACTION_LIMIT = 300
+FREE_AGENT_POOL_LIMIT = 160
+RESIGN_LOYALTY_DISCOUNT = 0.95
 
 
 @dataclass(slots=True)
@@ -64,12 +81,21 @@ class League:
     news: list[str] = field(default_factory=list)
     history: list[dict[str, Any]] = field(default_factory=list)
     last_user_game: GameResult | None = None
+    salary_cap: float = contracts.DEFAULT_SALARY_CAP
+    draft_picks: list[DraftPick] = field(default_factory=list)
+    draft: Draft | None = None
+    pending_draft_order: list[str] = field(default_factory=list)
+    trade_offers: list[TradeOffer] = field(default_factory=list)
+    next_offer_id: int = 1
+    transactions: list[str] = field(default_factory=list)
     _by_day: dict[int, list[ScheduledGame]] | None = field(default=None, repr=False)
 
     # ------------------------------------------------------------------ creation
 
     @classmethod
-    def create(cls, seed: int, user_team: str, year: int = DEFAULT_YEAR) -> League:
+    def create(
+        cls, seed: int, user_team: str, year: int = DEFAULT_YEAR, salary_cap: float | None = None
+    ) -> League:
         user_team = get_franchise(user_team).abbr
         teams, players, next_id = generate_rosters(seed)
         league = cls(
@@ -80,7 +106,9 @@ class League:
             players=players,
             schedule=generate_schedule(f"{seed}:{year}"),
             next_player_id=next_id,
+            salary_cap=salary_cap if salary_cap is not None else contracts.DEFAULT_SALARY_CAP,
         )
+        frontoffice.initialize(league)
         league.add_news(f"Welcome to the {year} season, {teams[user_team].full_name}!")
         return league
 
@@ -93,6 +121,29 @@ class League:
         self.news.append(message)
         if len(self.news) > NEWS_LIMIT:
             del self.news[: len(self.news) - NEWS_LIMIT]
+
+    def log_transaction(self, message: str) -> None:
+        self.transactions.append(f"{self.year} {self.phase_label_short()}: {message}")
+        if len(self.transactions) > TRANSACTION_LIMIT:
+            del self.transactions[: len(self.transactions) - TRANSACTION_LIMIT]
+
+    def phase_label_short(self) -> str:
+        if self.phase == PHASE_REGULAR:
+            return f"day {self.day + 1}"
+        return PHASE_LABELS.get(self.phase, self.phase).replace("Offseason: ", "")
+
+    @property
+    def in_season(self) -> bool:
+        return self.phase in (PHASE_REGULAR, PHASE_POSTSEASON)
+
+    @property
+    def in_offseason(self) -> bool:
+        return self.phase in OFFSEASON_PHASES
+
+    @property
+    def draft_year(self) -> int:
+        """Year of the next draft (held in the offseason after this season)."""
+        return self.year
 
     @property
     def user(self) -> Team:
@@ -137,7 +188,7 @@ class League:
         return pid
 
     def _prepare(self, team: Team) -> None:
-        notes = roster.repair(team, self.players)
+        notes = frontoffice.ensure_active_roster(self, team)
         if team.abbr == self.user_team:
             for note in notes:
                 self.add_news(note)
@@ -201,10 +252,35 @@ class League:
             g.losing_pitcher = result.losing_pitcher
             g.save_pitcher = result.save_pitcher
             report.games.append(PlayedGame("Regular season", result))
+        report.news.extend(self._front_office_day())
         self.day += 1
         if self.day > self.last_regular_day:
             report.news.extend(self._start_postseason())
         return report
+
+    def _front_office_day(self) -> list[str]:
+        """Weekly CPU front-office activity during the regular season."""
+        news: list[str] = []
+        self.trade_offers = [o for o in self.trade_offers if o.expires_day >= self.day]
+        if self.day == 0 or self.day % 7 != 0:
+            return news
+        frontoffice.update_strategies(self)
+        rng = self._rng("front-office", self.day)
+        for note in trades.cpu_trade_round(self, rng, attempts=1):
+            if self.user_team in note:
+                news.append(note)
+        if rng.random() < 0.5:
+            news.extend(self._add_cpu_offer(rng))
+        if self.day == trades.deadline_day(self):
+            news.append("The trade deadline passes at the end of today.")
+        return news
+
+    def _add_cpu_offer(self, rng: random.Random) -> list[str]:
+        offer = trades.generate_offer_for_user(self, rng)
+        if offer is None:
+            return []
+        self.trade_offers.append(offer)
+        return [f"{offer.proposal.team_a} has made you a trade offer (Front Office > Trade Center)."]
 
     def _start_postseason(self) -> list[str]:
         records = self.records()
@@ -312,33 +388,321 @@ class League:
     # ------------------------------------------------------------------ new season
 
     def start_new_season(self) -> None:
+        """Run the whole offseason automatically (CPU logic for every club)."""
         if not self.is_complete:
             raise RuntimeError("The current season is not complete yet.")
-        self.year += 1
+        self.begin_offseason()
+        while self.in_offseason:
+            self.advance_offseason(auto_user=True)
+
+    # ------------------------------------------------------------------ offseason
+
+    def begin_offseason(self) -> list[str]:
+        """Season complete -> aging, development, contract years, retirements."""
+        if not self.is_complete:
+            raise RuntimeError("The current season is not complete yet.")
+        records = self.records()
+        best_first = rank(list(self.teams), records)
+        finish: dict[str, int] = {}
+        if self.playoffs is not None:
+            for round_index, rnd in enumerate(self.playoffs.rounds):
+                for series in rnd:
+                    if series.loser:
+                        finish[series.loser] = round_index + 1
+            if self.playoffs.champion:
+                finish[self.playoffs.champion] = len(self.playoffs.rounds) + 1
+        self.pending_draft_order = draft_mod.draft_order(self.teams, best_first, finish)
+
+        news: list[str] = [f"The {self.year} offseason begins."]
         rng = self._rng("development")
+        user_changes: list[tuple[Player, int]] = []
         for player in sorted(self.players.values(), key=lambda p: p.id):
             player.age += 1
             player.fatigue = 0
+            delta = development.develop(player, rng)
+            if player.team is not None:
+                player.contract_years = max(0, player.contract_years - 1)
+            if player.team == self.user_team and abs(delta) >= 3:
+                user_changes.append((player, delta))
+        for player, delta in sorted(user_changes, key=lambda x: -abs(x[1]))[:6]:
+            verb = "improved" if delta > 0 else "declined"
+            news.append(f"{player.name} {verb} ({delta:+d} OVR, now {player.overall}).")
+
+        retire_rng = self._rng("retirement")
+        for player in sorted(self.players.values(), key=lambda p: p.id):
+            if development.should_retire(player, retire_rng):
+                if player.team == self.user_team or player.overall >= 62:
+                    news.append(f"{player.name} ({player.team or 'FA'}, age {player.age}) retires.")
+                self._remove_player(player.id)
+
+        for team in self.teams.values():
+            team.dead_money = 0.0
+            frontoffice.ensure_active_roster(self, team)
+        frontoffice.update_strategies(self)
+        self.trade_offers = []
+        self.phase = PHASE_RESIGN
+        pending = self.pending_free_agents(self.user)
+        if pending:
+            news.append(
+                f"{len(pending)} of your players have expiring contracts. Re-sign them in "
+                "Front Office > Contracts & Payroll before the draft."
+            )
+        for item in news:
+            self.add_news(item)
+        return news
+
+    def _remove_player(self, player_id: int) -> None:
+        player = self.players.pop(player_id)
+        if player.team is not None:
+            team = self.teams[player.team]
+            if player_id in team.active:
+                team.active.remove(player_id)
+            if player_id in team.reserves:
+                team.reserves.remove(player_id)
+
+    def pending_free_agents(self, team: Team) -> list[Player]:
+        return [self.players[pid] for pid in team.all_players if self.players[pid].contract_years <= 0]
+
+    def resign_ask(self, player: Player) -> tuple[float, int]:
+        return contracts.asking_contract(player, self.seed, discount=RESIGN_LOYALTY_DISCOUNT)
+
+    def extend_contract(self, team: Team, player_id: int, years: int) -> str:
+        """Re-sign a pending free agent (offseason) or extend a player in his final year.
+
+        Players accept their asking salary; extensions may exceed the cap.
+        """
+        player = self.players.get(player_id)
+        if player is None or player_id not in team.all_players:
+            raise contracts_error(f"Player #{player_id} is not in your organisation.")
+        if not 1 <= years <= contracts.max_years(player):
+            raise contracts_error(f"{player.name} will sign for 1-{contracts.max_years(player)} years.")
+        salary, _ = self.resign_ask(player)
+        if player.contract_years <= 0:
+            if self.phase != PHASE_RESIGN:
+                raise contracts_error("Pending free agents can only be re-signed in the re-signing period.")
+            contracts.sign(player, team.abbr, salary, years)
+            verb = "re-signed"
+        elif player.contract_years == 1:
+            contracts.sign(player, team.abbr, salary, years + 1)
+            verb = "extended"
+        else:
+            raise contracts_error(
+                f"{player.name} has {player.contract_years} years left; only final-year players can be extended."
+            )
+        note = f"{team.abbr} {verb} {player.name} ({years} yr, {contracts.money(salary)}/yr)."
+        self.log_transaction(note)
+        return note
+
+    def release(self, team: Team, player_id: int) -> str:
+        note = frontoffice.release_player(self, team, player_id)
+        if team.abbr == self.user_team:
+            for extra in frontoffice.ensure_active_roster(self, team):
+                self.add_news(extra)
+        return note
+
+    def advance_offseason(self, auto_user: bool = False) -> list[str]:
+        """Move to the next offseason phase, running CPU decisions on the way."""
+        if self.phase == PHASE_RESIGN:
+            news = self._close_resign_period(auto_user)
+        elif self.phase == PHASE_DRAFT:
+            news = self._close_draft()
+        elif self.phase == PHASE_FREE_AGENCY:
+            news = self._close_free_agency()
+        else:
+            raise RuntimeError("Not in the offseason.")
+        for item in news:
+            self.add_news(item)
+        return news
+
+    def _close_resign_period(self, auto_user: bool) -> list[str]:
+        news: list[str] = []
+        for team in sorted(self.teams.values(), key=lambda t: t.abbr):
+            if team.abbr == self.user_team and not auto_user:
+                continue
+            for player in sorted(self.pending_free_agents(team), key=lambda p: -p.overall):
+                salary, years = self.resign_ask(player)
+                wanted = player.overall >= 55 or (player.age <= 26 and player.potential >= 62)
+                fits = contracts.payroll(team, self.players) + salary <= self.salary_cap - 2
+                if wanted and fits and player.age <= 36:
+                    contracts.sign(player, team.abbr, salary, years)
+                    self.log_transaction(f"{team.abbr} re-signed {player.name} ({years} yr, {contracts.money(salary)}/yr).")
+        for team in self.teams.values():
+            for player in self.pending_free_agents(team):
+                if team.abbr == self.user_team or player.overall >= 62:
+                    news.append(f"{player.name} ({team.abbr}, {player.overall} OVR) becomes a free agent.")
+                self._remove_from_org(team, player)
+                self.log_transaction(f"{player.name} left {team.abbr} as a free agent.")
+        for team in self.teams.values():
+            frontoffice.ensure_active_roster(self, team)
+
+        factory = PlayerFactory(self._rng("draft-class"), start_id=self.next_player_id)
+        prospects = draft_mod.generate_class(self._rng("draft-class-ratings"), factory)
+        self.next_player_id = factory.next_id
+        for prospect in prospects:
+            self.players[prospect.id] = prospect
+        self.draft = Draft(self.draft_year, list(self.pending_draft_order), [p.id for p in prospects])
+        self.phase = PHASE_DRAFT
+        mine = [i + 1 for i, abbr in enumerate(self.draft.order) if self.draft_owner(1, abbr) == self.user_team]
+        news.append(
+            f"The {self.draft_year} draft class is ready ({len(prospects)} prospects). "
+            + (f"Your first-round pick: #{mine[0]}." if mine else "You have no first-round pick.")
+        )
+        return news
+
+    def _remove_from_org(self, team: Team, player: Player) -> None:
+        if player.id in team.active:
+            team.active.remove(player.id)
+        if player.id in team.reserves:
+            team.reserves.remove(player.id)
+        player.team = None
+        player.contract_years = 0
+
+    # -- draft -------------------------------------------------------------------------
+
+    def draft_owner(self, rnd: int, original: str) -> str:
+        assert self.draft is not None
+        pick = draft_mod.find_pick(self.draft_picks, self.draft.year, rnd, original)
+        return pick.owner if pick else original
+
+    def draft_on_clock(self) -> tuple[int, int, str] | None:
+        """``(overall pick number, round, owner)`` of the current selection."""
+        if self.draft is None or self.phase != PHASE_DRAFT or self.draft.is_complete:
+            return None
+        rnd, original = self.draft.current_slot()  # type: ignore[misc]
+        return len(self.draft.selections) + 1, rnd, self.draft_owner(rnd, original)
+
+    def draft_select(self, player_id: int) -> DraftSelection:
+        clock = self.draft_on_clock()
+        if clock is None:
+            raise RuntimeError("No draft is in progress.")
+        assert self.draft is not None
+        if player_id not in self.draft.pool:
+            raise ValueError(f"Player #{player_id} is not available in the draft.")
+        number, rnd, owner = clock
+        _, original = self.draft.current_slot()  # type: ignore[misc]
+        player = self.players[player_id]
+        self.draft.pool.remove(player_id)
+        contracts.sign(player, owner, contracts.rookie_salary(rnd), contracts.ROOKIE_CONTRACT_YEARS)
+        player.draft_year, player.draft_round, player.draft_pick = self.draft.year, rnd, number
+        self.teams[owner].reserves.append(player_id)
+        pick = draft_mod.find_pick(self.draft_picks, self.draft.year, rnd, original)
+        if pick is not None:
+            self.draft_picks.remove(pick)
+        selection = DraftSelection(number, rnd, owner, original, player_id)
+        self.draft.selections.append(selection)
+        self.log_transaction(
+            f"Draft #{number} (R{rnd}): {owner} selects {player.name}, {player.position}, age {player.age}."
+        )
+        return selection
+
+    def draft_cpu_pick(self) -> DraftSelection:
+        clock = self.draft_on_clock()
+        assert clock is not None and self.draft is not None
+        team = self.teams[clock[2]]
+        return self.draft_select(draft_mod.cpu_choose(self.draft, team, self.players, self.seed))
+
+    def draft_until_user(self) -> list[DraftSelection]:
+        """CPU clubs pick until the user is on the clock (or the draft ends)."""
+        made = []
+        while (clock := self.draft_on_clock()) is not None and clock[2] != self.user_team:
+            made.append(self.draft_cpu_pick())
+        return made
+
+    def draft_auto_rest(self) -> list[DraftSelection]:
+        """Finish the draft; the user's picks use the scouting department's board."""
+        made = []
+        while self.draft_on_clock() is not None:
+            made.append(self.draft_cpu_pick())
+        return made
+
+    def _close_draft(self) -> list[str]:
+        assert self.draft is not None
+        self.draft_auto_rest()
+        mine = [s for s in self.draft.selections if s.team == self.user_team]
+        for leftover in list(self.draft.pool):
+            self.players.pop(leftover, None)  # undrafted prospects return to school
+        self.draft.pool = []
+        self.draft_picks = [p for p in self.draft_picks if p.year != self.draft.year]
+        news = [f"The {self.draft.year} draft is complete. Your class:"]
+        for sel in mine:
+            p = self.players[sel.player_id]
+            news.append(f"  #{sel.overall_pick} (R{sel.round}) {p.name}, {p.position}, age {p.age}")
+        self.phase = PHASE_FREE_AGENCY
+        rng = self._rng("offseason-trades")
+        trades.cpu_trade_round(self, rng, attempts=4)
+        for _ in range(2):
+            news.extend(self._add_cpu_offer(rng))
+        fa_count = len(freeagency.free_agents(self))
+        news.append(f"Free agency is open: {fa_count} players available (Front Office > Free Agency).")
+        return news
+
+    def _close_free_agency(self) -> list[str]:
+        news = freeagency.cpu_free_agency(self)
+        news = [n for n in news if self.user_team in n][:5]
+        for team in sorted(self.teams.values(), key=lambda t: t.abbr):
+            if team.abbr == self.user_team:
+                cut = frontoffice.cutdown(self, team)
+                news.extend(f"Roster limit: {note}" for note in cut)
+                news.extend(frontoffice.fill_minimums(self, team))
+                news.extend(frontoffice.ensure_active_roster(self, team))
+            else:
+                frontoffice.fill_minimums(self, team)
+                frontoffice.optimize_roster(self, team)
+                frontoffice.cutdown(self, team)
+        self._trim_free_agent_pool()
+        self._start_new_season()
+        news.append(f"The {self.year} season begins. Good luck!")
+        return news
+
+    def _trim_free_agent_pool(self) -> None:
+        rng = self._rng("fa-retirement")
+        pool = freeagency.free_agents(self)
+        for index, player in enumerate(pool):
+            if index >= FREE_AGENT_POOL_LIMIT or development.should_retire(player, rng):
+                self.players.pop(player.id, None)
+
+    def _start_new_season(self) -> None:
+        self.year += 1
+        for player in self.players.values():
+            player.fatigue = 0
             player.reset_season_stats()
-            change = (27 - player.age) * 0.6 + rng.gauss(0, 2)
-            change = max(-6.0, min(6.0, change))
-            for attr in player.ratings:
-                if attr == "stamina":
-                    continue
-                player.ratings[attr] = clamp_rating(player.ratings[attr] + change + rng.gauss(0, 1))
         for team in self.teams.values():
             team.rotation_index = 0
-            if team.abbr != self.user_team:
-                roster.auto_configure(team, self.players)
-            else:
-                roster.repair(team, self.players)
+        existing = {p.year for p in self.draft_picks}
+        for year in range(self.draft_year, self.draft_year + draft_mod.FUTURE_DRAFT_YEARS):
+            if year not in existing:
+                self.draft_picks.extend(draft_mod.create_picks(list(self.teams), year))
         self.schedule = generate_schedule(f"{self.seed}:{self.year}")
         self._by_day = None
         self.day = 0
         self.phase = PHASE_REGULAR
         self.playoffs = None
         self.last_user_game = None
-        self.add_news(f"The {self.year} season begins. Players have aged and developed.")
+        self.trade_offers = []
+        frontoffice.update_strategies(self)
+
+    # -- trades ------------------------------------------------------------------------
+
+    def offer_by_id(self, offer_id: int) -> TradeOffer | None:
+        return next((o for o in self.trade_offers if o.offer_id == offer_id), None)
+
+    def accept_offer(self, offer_id: int) -> list[str]:
+        offer = self.offer_by_id(offer_id)
+        if offer is None:
+            raise trades.TradeError(f"No trade offer #{offer_id}.")
+        self.trade_offers.remove(offer)
+        cpu = offer.proposal.team_a
+        errors = trades.validate(self, offer.proposal)
+        if errors:
+            raise trades.TradeError("Offer is no longer valid: " + "; ".join(errors))
+        if not trades.evaluate(self, offer.proposal, evaluator=cpu).accepted:
+            raise trades.TradeError(f"{cpu} has withdrawn the offer.")
+        return trades.execute(self, offer.proposal)
+
+    def reject_offer(self, offer_id: int) -> None:
+        offer = self.offer_by_id(offer_id)
+        if offer is not None:
+            self.trade_offers.remove(offer)
 
     # ------------------------------------------------------------------ queries
 
@@ -386,6 +750,13 @@ class League:
             "news": list(self.news),
             "history": list(self.history),
             "last_user_game": self.last_user_game.to_dict() if self.last_user_game else None,
+            "salary_cap": self.salary_cap,
+            "draft_picks": [p.to_dict() for p in self.draft_picks],
+            "draft": self.draft.to_dict() if self.draft else None,
+            "pending_draft_order": list(self.pending_draft_order),
+            "trade_offers": [o.to_dict() for o in self.trade_offers],
+            "next_offer_id": self.next_offer_id,
+            "transactions": list(self.transactions),
         }
 
     @classmethod
@@ -408,4 +779,19 @@ class League:
             last_user_game=(
                 GameResult.from_dict(data["last_user_game"]) if data.get("last_user_game") else None
             ),
+            salary_cap=float(data.get("salary_cap", contracts.DEFAULT_SALARY_CAP)),
+            draft_picks=[DraftPick.from_dict(p) for p in data.get("draft_picks", [])],
+            draft=Draft.from_dict(data["draft"]) if data.get("draft") else None,
+            pending_draft_order=list(data.get("pending_draft_order", [])),
+            trade_offers=[TradeOffer.from_dict(o) for o in data.get("trade_offers", [])],
+            next_offer_id=int(data.get("next_offer_id", 1)),
+            transactions=list(data.get("transactions", [])),
         )
+
+
+def contracts_error(message: str) -> ValueError:
+    return ContractError(message)
+
+
+class ContractError(ValueError):
+    """Raised for an invalid contract action."""

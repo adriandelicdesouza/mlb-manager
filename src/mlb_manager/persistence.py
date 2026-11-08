@@ -9,10 +9,11 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from mlb_manager import __version__
+from mlb_manager import __version__, frontoffice
 from mlb_manager.league import League
 
-SAVE_FORMAT_VERSION = 1
+SAVE_FORMAT_VERSION = 2
+SUPPORTED_VERSIONS = (1, 2)
 SAVE_SUFFIX = ".json"
 SAVE_DIR_ENV = "MLB_MANAGER_SAVE_DIR"
 
@@ -77,14 +78,27 @@ def load_league(path: str | os.PathLike[str]) -> League:
     if not isinstance(payload, dict) or "league" not in payload:
         raise SaveError(f"{source} is not an MLB Manager save file.")
     version = payload.get("format_version")
-    if version != SAVE_FORMAT_VERSION:
+    if version not in SUPPORTED_VERSIONS:
         raise SaveError(
-            f"Unsupported save format version {version!r} (expected {SAVE_FORMAT_VERSION})."
+            f"Unsupported save format version {version!r} (supported: {SUPPORTED_VERSIONS})."
         )
     try:
-        return League.from_dict(payload["league"])
+        league = League.from_dict(payload["league"])
     except (KeyError, TypeError, ValueError) as exc:
         raise SaveError(f"Save file {source} is corrupt: {exc!r}") from exc
+    if version == 1:
+        migrate_v1_to_v2(league)
+    return league
+
+
+def migrate_v1_to_v2(league: League) -> None:
+    """v1 saves predate the front office: add contracts, potential and draft picks.
+
+    The initialisation is seeded from the league seed, so migrating the same
+    save twice gives identical results.
+    """
+    frontoffice.initialize(league)
+    league.add_news("Save upgraded: contracts, salary cap, draft picks and scouting are now active.")
 
 
 def list_saves(directory: Path | None = None) -> list[Path]:

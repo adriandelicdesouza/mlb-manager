@@ -119,6 +119,15 @@ class Player:
     fatigue: int = 0  # pitch-count style fatigue, recovers daily
     batting: BattingStats = field(default_factory=BattingStats)
     pitching: PitchingStats = field(default_factory=PitchingStats)
+    # Front office data -------------------------------------------------------
+    potential: int = 0  # true ceiling for overall (0 = not yet initialised)
+    development: str = "normal"  # "fast", "normal" or "slow" growth trajectory
+    salary: float = 0.0  # annual salary in $ millions
+    contract_years: int = 0  # seasons remaining, including the current one
+    contract_length: int = 0  # length of the contract when signed
+    draft_year: int | None = None
+    draft_round: int | None = None
+    draft_pick: int | None = None
 
     @property
     def name(self) -> str:
@@ -180,6 +189,14 @@ class Player:
             "fatigue": self.fatigue,
             "batting": self.batting.to_dict(),
             "pitching": self.pitching.to_dict(),
+            "potential": self.potential,
+            "development": self.development,
+            "salary": self.salary,
+            "contract_years": self.contract_years,
+            "contract_length": self.contract_length,
+            "draft_year": self.draft_year,
+            "draft_round": self.draft_round,
+            "draft_pick": self.draft_pick,
         }
 
     @classmethod
@@ -198,6 +215,14 @@ class Player:
             fatigue=int(data.get("fatigue", 0)),
             batting=BattingStats.from_dict(data.get("batting")),
             pitching=PitchingStats.from_dict(data.get("pitching")),
+            potential=int(data.get("potential", 0)),
+            development=data.get("development", "normal"),
+            salary=float(data.get("salary", 0.0)),
+            contract_years=int(data.get("contract_years", 0)),
+            contract_length=int(data.get("contract_length", 0)),
+            draft_year=data.get("draft_year"),
+            draft_round=data.get("draft_round"),
+            draft_pick=data.get("draft_pick"),
         )
 
 
@@ -227,6 +252,8 @@ class Team:
     rotation: list[int] = field(default_factory=list)
     closer: int | None = None
     rotation_index: int = 0
+    strategy: str = "balanced"  # "contending", "balanced" or "rebuilding"
+    dead_money: float = 0.0  # salary owed to released players this season
 
     @property
     def full_name(self) -> str:
@@ -253,6 +280,8 @@ class Team:
             "rotation": list(self.rotation),
             "closer": self.closer,
             "rotation_index": self.rotation_index,
+            "strategy": self.strategy,
+            "dead_money": self.dead_money,
         }
 
     @classmethod
@@ -269,4 +298,6 @@ class Team:
             rotation=[int(x) for x in data.get("rotation", [])],
             closer=data.get("closer"),
             rotation_index=int(data.get("rotation_index", 0)),
+            strategy=data.get("strategy", "balanced"),
+            dead_money=float(data.get("dead_money", 0.0)),
         )

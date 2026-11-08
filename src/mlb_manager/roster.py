@@ -49,7 +49,7 @@ def bench(team: Team, players: Players) -> list[Player]:
     return [p for p in active_hitters(team, players) if p.id not in starters]
 
 
-def _position_value(player: Player, position: str) -> float:
+def position_value(player: Player, position: str) -> float:
     eligible = player.can_play(position)
     share = rt.DEFENSE_SHARE[position]
     value = rt.batting_rating(player.ratings) * (1 - share)
@@ -65,7 +65,7 @@ def auto_lineup(team: Team, players: Players) -> None:
     chosen: dict[str, Player] = {}
     remaining = list(pool)
     for position in AUTO_FILL_ORDER:
-        best = max(remaining, key=lambda p: (_position_value(p, position), -p.id))
+        best = max(remaining, key=lambda p: (position_value(p, position), -p.id))
         chosen[position] = best
         remaining.remove(best)
     chosen["DH"] = max(remaining, key=lambda p: (rt.batting_rating(p.ratings), -p.id))
@@ -189,7 +189,13 @@ def swap_active_reserve(team: Team, players: Players, active_id: int, reserve_id
 
     team.active[team.active.index(active_id)] = reserve_id
     team.reserves[team.reserves.index(reserve_id)] = active_id
+    return replace_departed(team, players, active_id)
 
+
+def replace_departed(team: Team, players: Players, departed_id: int) -> list[str]:
+    """Fill lineup/rotation/closer holes left by a player leaving the active roster."""
+    outgoing = players[departed_id]
+    active_id = departed_id
     notes: list[str] = []
     for index, slot in enumerate(team.lineup):
         if slot.player_id == active_id:
@@ -211,7 +217,7 @@ def _best_bench_for(team: Team, players: Players, position: str) -> Player:
     candidates = bench(team, players)
     if not candidates:
         raise RosterError("No bench player available.")
-    return max(candidates, key=lambda p: (_position_value(p, position), -p.id))
+    return max(candidates, key=lambda p: (position_value(p, position), -p.id))
 
 
 def _best_bullpen_starter(team: Team, players: Players) -> Player:
@@ -267,3 +273,29 @@ def set_closer(team: Team, players: Players, pitcher_id: int) -> None:
     if pitcher_id not in {p.id for p in bullpen(team, players)}:
         raise RosterError(f"Player #{pitcher_id} is not an active bullpen pitcher.")
     team.closer = pitcher_id
+
+
+def promote(team: Team, players: Players, player_id: int) -> None:
+    """Move a reserve to an open active-roster spot."""
+    if player_id not in team.reserves:
+        raise RosterError(f"Player #{player_id} is not in your minor league system.")
+    if len(team.active) >= MAX_ACTIVE:
+        raise RosterError(f"Active roster is full ({MAX_ACTIVE}). Demote or swap someone instead.")
+    if players[player_id].is_pitcher and len(active_pitchers(team, players)) >= MAX_ACTIVE_PITCHERS:
+        raise RosterError(f"Already {MAX_ACTIVE_PITCHERS} active pitchers.")
+    team.reserves.remove(player_id)
+    team.active.append(player_id)
+
+
+def demote(team: Team, players: Players, player_id: int) -> list[str]:
+    """Send an active player to the minors; lineup/staff holes are filled."""
+    if player_id not in team.active:
+        raise RosterError(f"Player #{player_id} is not on the active roster.")
+    player = players[player_id]
+    if player.is_pitcher and len(active_pitchers(team, players)) <= ROTATION_SIZE + 1:
+        raise RosterError("Not enough active pitchers left to demote him.")
+    if not player.is_pitcher and len(active_hitters(team, players)) <= len(rt.LINEUP_POSITIONS):
+        raise RosterError("Not enough active position players left to demote him.")
+    team.active.remove(player_id)
+    team.reserves.append(player_id)
+    return replace_departed(team, players, player_id)
