@@ -128,6 +128,15 @@ class Player:
     draft_year: int | None = None
     draft_round: int | None = None
     draft_pick: int | None = None
+    # In-season data -----------------------------------------------------------
+    injury: str | None = None  # description of the current injury
+    injury_days: int = 0  # days until healthy (0 = healthy)
+    service_years: int = 0  # completed MLB seasons (rookie = 0)
+    games_by_pos: dict[str, int] = field(default_factory=dict)  # season games started per position
+
+    @property
+    def is_injured(self) -> bool:
+        return self.injury_days > 0
 
     @property
     def name(self) -> str:
@@ -173,6 +182,14 @@ class Player:
     def reset_season_stats(self) -> None:
         self.batting = BattingStats()
         self.pitching = PitchingStats()
+        self.games_by_pos = {}
+
+    @property
+    def main_position(self) -> str:
+        """Position played most this season (primary position if none)."""
+        if not self.games_by_pos:
+            return self.position
+        return max(sorted(self.games_by_pos), key=lambda pos: self.games_by_pos[pos])
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -197,6 +214,10 @@ class Player:
             "draft_year": self.draft_year,
             "draft_round": self.draft_round,
             "draft_pick": self.draft_pick,
+            "injury": self.injury,
+            "injury_days": self.injury_days,
+            "service_years": self.service_years,
+            "games_by_pos": dict(self.games_by_pos),
         }
 
     @classmethod
@@ -223,6 +244,10 @@ class Player:
             draft_year=data.get("draft_year"),
             draft_round=data.get("draft_round"),
             draft_pick=data.get("draft_pick"),
+            injury=data.get("injury"),
+            injury_days=int(data.get("injury_days", 0)),
+            service_years=int(data.get("service_years", 0)),
+            games_by_pos={k: int(v) for k, v in data.get("games_by_pos", {}).items()},
         )
 
 
@@ -254,6 +279,7 @@ class Team:
     rotation_index: int = 0
     strategy: str = "balanced"  # "contending", "balanced" or "rebuilding"
     dead_money: float = 0.0  # salary owed to released players this season
+    injured_list: list[int] = field(default_factory=list)  # IL: in the org, off the 26
 
     @property
     def full_name(self) -> str:
@@ -265,7 +291,15 @@ class Team:
 
     @property
     def all_players(self) -> list[int]:
-        return [*self.active, *self.reserves]
+        return [*self.active, *self.reserves, *self.injured_list]
+
+    def remove_player(self, player_id: int) -> None:
+        """Remove a player from whichever roster list holds him."""
+        for group in (self.active, self.reserves, self.injured_list):
+            if player_id in group:
+                group.remove(player_id)
+                return
+        raise ValueError(f"Player #{player_id} is not in {self.abbr}'s organisation")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -282,6 +316,7 @@ class Team:
             "rotation_index": self.rotation_index,
             "strategy": self.strategy,
             "dead_money": self.dead_money,
+            "injured_list": list(self.injured_list),
         }
 
     @classmethod
@@ -300,4 +335,5 @@ class Team:
             rotation_index=int(data.get("rotation_index", 0)),
             strategy=data.get("strategy", "balanced"),
             dead_money=float(data.get("dead_money", 0.0)),
+            injured_list=[int(x) for x in data.get("injured_list", [])],
         )

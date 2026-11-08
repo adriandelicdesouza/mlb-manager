@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from mlb_manager import contracts, frontoffice
 from mlb_manager.draft import DraftPick
+from mlb_manager.injuries import IL_THRESHOLD_DAYS
 from mlb_manager.models import Player, Team
 
 if TYPE_CHECKING:
@@ -306,12 +307,13 @@ def execute(league: League, prop: TradeProposal) -> list[str]:
         give, take = league.teams[giver], league.teams[receiver]
         pids, picks = prop.assets_of(giver)
         for pid in pids:
-            if pid in give.active:
-                give.active.remove(pid)
+            give.remove_player(pid)
+            player = league.players[pid]
+            if player.injury_days >= IL_THRESHOLD_DAYS:
+                take.injured_list.append(pid)
             else:
-                give.reserves.remove(pid)
-            take.reserves.append(pid)
-            league.players[pid].team = receiver
+                take.reserves.append(pid)
+            player.team = receiver
         for pick_id in picks:
             pick = get_pick(league, pick_id)
             assert pick is not None

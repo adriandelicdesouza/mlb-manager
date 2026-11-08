@@ -12,7 +12,7 @@ import random
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
-from mlb_manager import contracts, development, roster
+from mlb_manager import contracts, development, injuries, roster
 from mlb_manager import ratings as rt
 from mlb_manager.draft import FUTURE_DRAFT_YEARS, DraftPick, create_picks
 from mlb_manager.generation import PlayerFactory
@@ -139,6 +139,10 @@ def player_value(league: League, player: Player, team: Team) -> float:
     value += surplus * 4
     if strategy == "rebuilding" and age >= 30:
         value -= player.salary * min(years, 4) * 2
+    if player.injury_days > 60:
+        value *= 0.5
+    elif player.injury_days > 20:
+        value *= 0.8
     return value * need_factor(league, player, team)
 
 
@@ -162,10 +166,30 @@ def pick_value(league: League, pick: DraftPick, team: Team, ranks: dict[str, int
 # ----------------------------------------------------------------------------- roster management
 
 
-def optimize_roster(league: League, team: Team) -> None:
-    """Choose the best 26 from the organisation and configure the staff (CPU logic)."""
+def sync_injured_list(league: League, team: Team) -> None:
+    """CPU-style IL management: IL longer injuries, reinstate healed players."""
     players = league.players
-    members = org(league, team)
+    for pid in list(team.injured_list):
+        if not players[pid].is_injured:
+            team.injured_list.remove(pid)
+            team.reserves.append(pid)
+    for pid in [*team.active, *team.reserves]:
+        if players[pid].injury_days >= injuries.IL_THRESHOLD_DAYS:
+            team.remove_player(pid)
+            team.injured_list.append(pid)
+
+
+def optimize_roster(league: League, team: Team, use_performance: bool = False) -> None:
+    """Choose the best healthy 26 from the organisation and configure the staff.
+
+    ``use_performance`` blends season statistics into lineup order and rotation
+    choice (CPU in-season management).
+    """
+    players = league.players
+    sync_injured_list(league, team)
+    everyone = [players[pid] for pid in [*team.active, *team.reserves]]
+    members = [p for p in everyone if not p.is_injured]
+    hurt = [p for p in everyone if p.is_injured]
     pitchers = [p for p in members if p.is_pitcher]
     hitters = [p for p in members if not p.is_pitcher]
 
@@ -201,7 +225,7 @@ def optimize_roster(league: League, team: Team) -> None:
 
     leftovers = sorted(
         (p for p in members if p not in active), key=lambda p: (-p.overall, p.id)
-    )
+    ) + sorted(hurt, key=lambda p: (p.injury_days, -p.overall, p.id))
     pitcher_count = sum(p.is_pitcher for p in active)
     for p in leftovers:
         if len(active) >= roster.MAX_ACTIVE:
@@ -213,8 +237,8 @@ def optimize_roster(league: League, team: Team) -> None:
 
     active_ids = {p.id for p in active}
     team.active = [p.id for p in active]
-    team.reserves = [p.id for p in members if p.id not in active_ids]
-    roster.auto_configure(team, players)
+    team.reserves = [p.id for p in everyone if p.id not in active_ids]
+    roster.auto_configure(team, players, use_performance=use_performance)
 
 
 def ensure_active_roster(league: League, team: Team) -> list[str]:
@@ -223,13 +247,63 @@ def ensure_active_roster(league: League, team: Team) -> list[str]:
     notes: list[str] = []
     if not _has_minimum_depth(league, team):
         notes.extend(fill_minimums(league, team))
+    notes.extend(_fill_open_spots(league, team))
+    notes.extend(_ensure_healthy_depth(league, team))
+    if len(roster.active_hitters(team, players)) < len(rt.LINEUP_POSITIONS) or len(
+        roster.active_pitchers(team, players)
+    ) < roster.ROTATION_SIZE + 1:
+        optimize_roster(league, team)
+        notes.append(f"{team.abbr}: active roster reorganised to field a legal team.")
+    notes.extend(roster.repair(team, players))
+    return notes
+
+
+HEALTHY_HITTERS_NEEDED = 10
+HEALTHY_PITCHERS_NEEDED = 10
+
+
+def _ensure_healthy_depth(league: League, team: Team) -> list[str]:
+    """Move injured active players to the IL until enough healthy players are active."""
+    players = league.players
+    notes: list[str] = []
+    for _ in range(12):
+        hitters, pitchers = injuries.healthy_counts(team, players)
+        need_hitter = hitters < HEALTHY_HITTERS_NEEDED
+        need_pitcher = pitchers < HEALTHY_PITCHERS_NEEDED
+        if not need_hitter and not need_pitcher:
+            break
+        hurt = [
+            players[pid] for pid in team.active
+            if players[pid].is_injured and players[pid].is_pitcher == (not need_hitter)
+        ]
+        if not hurt:
+            break
+        worst = max(hurt, key=lambda p: (p.injury_days, p.id))
+        notes.extend(injuries.place_on_il(team, players, worst.id))
+        notes.append(f"{team.abbr} placed {worst.name} on the injured list ({worst.injury}).")
+        league.log_transaction(notes[-1])
+        if not any(not players[pid].is_injured and players[pid].is_pitcher == worst.is_pitcher
+                   for pid in team.reserves):
+            notes.extend(fill_minimums(league, team, force=("P" if worst.is_pitcher else "H")))
+        notes.extend(_fill_open_spots(league, team, prefer_pitcher=worst.is_pitcher))
+    return notes
+
+
+def _fill_open_spots(league: League, team: Team, prefer_pitcher: bool | None = None) -> list[str]:
+    players = league.players
+    notes: list[str] = []
     while len(team.active) < roster.MAX_ACTIVE and team.reserves:
         pitchers = len(roster.active_pitchers(team, players))
         hitters = len(team.active) - pitchers
-        reserves = roster.reserve_players(team, players)
+        reserves = [p for p in roster.reserve_players(team, players) if not p.is_injured]
+        if not reserves:
+            break
         want_pitcher = pitchers < roster.MAX_ACTIVE_PITCHERS and (
             hitters >= roster.MAX_ACTIVE - roster.MAX_ACTIVE_PITCHERS or pitchers < 11
         )
+        if prefer_pitcher is not None:
+            want_pitcher = prefer_pitcher and pitchers < roster.MAX_ACTIVE_PITCHERS
+            prefer_pitcher = None
         pool = [p for p in reserves if p.is_pitcher == want_pitcher]
         if not pool:
             pool = [p for p in reserves if not p.is_pitcher] if want_pitcher else []
@@ -241,17 +315,11 @@ def ensure_active_roster(league: League, team: Team) -> list[str]:
         team.reserves.remove(best.id)
         team.active.append(best.id)
         notes.append(f"{team.abbr}: {best.name} called up to fill an open roster spot.")
-    if len(roster.active_hitters(team, players)) < len(rt.LINEUP_POSITIONS) or len(
-        roster.active_pitchers(team, players)
-    ) < roster.ROTATION_SIZE + 1:
-        optimize_roster(league, team)
-        notes.append(f"{team.abbr}: active roster reorganised to field a legal team.")
-    notes.extend(roster.repair(team, players))
     return notes
 
 
 def _has_minimum_depth(league: League, team: Team) -> bool:
-    members = org(league, team)
+    members = [league.players[pid] for pid in [*team.active, *team.reserves]]
     pitchers = sum(p.is_pitcher for p in members)
     catchers = sum(p.can_play("C") for p in members)
     return (
@@ -266,7 +334,7 @@ def new_player_factory(league: League, purpose: str) -> PlayerFactory:
     return factory
 
 
-def fill_minimums(league: League, team: Team) -> list[str]:
+def fill_minimums(league: League, team: Team, force: str | None = None) -> list[str]:
     """Guarantee 13 pitchers, 13 hitters and 2 catchers in the organisation.
 
     Signs the best minimum-salary free agent of the needed type, or a
@@ -276,11 +344,13 @@ def fill_minimums(league: League, team: Team) -> list[str]:
 
     notes: list[str] = []
     for _ in range(40):
-        members = org(league, team)
+        members = [league.players[pid] for pid in [*team.active, *team.reserves]]
         pitchers = sum(p.is_pitcher for p in members)
         catchers = sum(p.can_play("C") for p in members)
         hitters = len(members) - pitchers
-        if catchers < MIN_ORG_CATCHERS:
+        if force is not None:
+            need, force = force, None
+        elif catchers < MIN_ORG_CATCHERS:
             need = "C"
         elif pitchers < MIN_ORG_PITCHERS:
             need = "P"
@@ -315,10 +385,7 @@ def release_player(league: League, team: Team, player_id: int) -> str:
     player = league.players[player_id]
     if player_id not in team.all_players:
         raise roster.RosterError(f"{player.name} is not in your organisation.")
-    if player_id in team.active:
-        team.active.remove(player_id)
-    else:
-        team.reserves.remove(player_id)
+    team.remove_player(player_id)
     if player.contract_years > 0:
         team.dead_money = round(team.dead_money + player.salary, 2)
     player.team = None

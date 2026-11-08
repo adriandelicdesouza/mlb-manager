@@ -12,8 +12,8 @@ from typing import Any
 from mlb_manager import __version__, frontoffice
 from mlb_manager.league import League
 
-SAVE_FORMAT_VERSION = 2
-SUPPORTED_VERSIONS = (1, 2)
+SAVE_FORMAT_VERSION = 3
+SUPPORTED_VERSIONS = (1, 2, 3)
 SAVE_SUFFIX = ".json"
 SAVE_DIR_ENV = "MLB_MANAGER_SAVE_DIR"
 
@@ -88,6 +88,8 @@ def load_league(path: str | os.PathLike[str]) -> League:
         raise SaveError(f"Save file {source} is corrupt: {exc!r}") from exc
     if version == 1:
         migrate_v1_to_v2(league)
+    if version in (1, 2):
+        migrate_v2_to_v3(league)
     return league
 
 
@@ -99,6 +101,24 @@ def migrate_v1_to_v2(league: League) -> None:
     """
     frontoffice.initialize(league)
     league.add_news("Save upgraded: contracts, salary cap, draft picks and scouting are now active.")
+
+
+def migrate_v2_to_v3(league: League) -> None:
+    """v2 saves predate injuries, service time and position games.
+
+    Everyone starts healthy with an empty IL (the defaults); service time is
+    estimated from age and games-by-position from games played this season.
+    """
+    league.assign_initial_service()
+    for team in league.teams.values():
+        for slot in team.lineup:
+            player = league.players[slot.player_id]
+            if player.batting.g and not player.games_by_pos:
+                player.games_by_pos = {slot.position: player.batting.g}
+    for player in league.players.values():
+        if player.batting.g and not player.games_by_pos and not player.is_pitcher:
+            player.games_by_pos = {player.position: player.batting.g}
+    league.add_news("Save upgraded: injuries, in-season development and awards are now active.")
 
 
 def list_saves(directory: Path | None = None) -> list[Path]:

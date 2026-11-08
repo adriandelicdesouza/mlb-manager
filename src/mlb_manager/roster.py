@@ -57,9 +57,24 @@ def position_value(player: Player, position: str) -> float:
     return value - (0 if eligible else 15)
 
 
-def auto_lineup(team: Team, players: Players) -> None:
-    """Pick the best nine hitters for each position and order them."""
-    pool = active_hitters(team, players)
+def hitting_value(player: Player, use_performance: bool = False) -> float:
+    """Batting rating, optionally blended with this season's OPS once meaningful."""
+    base = rt.batting_rating(player.ratings)
+    if use_performance and player.batting.pa >= 100:
+        weight = min(0.4, player.batting.pa / 1000)
+        perf = 50 + (player.batting.ops - 0.720) * 100
+        return base * (1 - weight) + perf * weight
+    return base
+
+
+def auto_lineup(team: Team, players: Players, use_performance: bool = False) -> None:
+    """Pick the best nine hitters for each position and order them.
+
+    Injured players are only used if there are not enough healthy hitters.
+    """
+    everyone = active_hitters(team, players)
+    healthy = [p for p in everyone if not p.is_injured]
+    pool = healthy if len(healthy) >= len(rt.LINEUP_POSITIONS) else everyone
     if len(pool) < len(rt.LINEUP_POSITIONS):
         raise RosterError(f"{team.abbr} has only {len(pool)} active position players")
     chosen: dict[str, Player] = {}
@@ -68,10 +83,10 @@ def auto_lineup(team: Team, players: Players) -> None:
         best = max(remaining, key=lambda p: (position_value(p, position), -p.id))
         chosen[position] = best
         remaining.remove(best)
-    chosen["DH"] = max(remaining, key=lambda p: (rt.batting_rating(p.ratings), -p.id))
+    chosen["DH"] = max(remaining, key=lambda p: (hitting_value(p, use_performance), -p.id))
 
     ranked = sorted(
-        chosen.items(), key=lambda kv: (-rt.batting_rating(kv[1].ratings), kv[1].id)
+        chosen.items(), key=lambda kv: (-hitting_value(kv[1], use_performance), kv[1].id)
     )
     order: list[LineupSlot | None] = [None] * 9
     for rank, (position, player) in enumerate(ranked):
@@ -79,16 +94,21 @@ def auto_lineup(team: Team, players: Players) -> None:
     team.lineup = [slot for slot in order if slot is not None]
 
 
-def auto_pitching(team: Team, players: Players) -> None:
+def auto_pitching(team: Team, players: Players, use_performance: bool = False) -> None:
     """Pick a five-man rotation and a closer from the active pitchers."""
-    pitchers = active_pitchers(team, players)
+    everyone = active_pitchers(team, players)
+    healthy = [p for p in everyone if not p.is_injured]
+    pitchers = healthy if len(healthy) >= ROTATION_SIZE + 1 else everyone
     if len(pitchers) < ROTATION_SIZE + 1:
         raise RosterError(f"{team.abbr} needs at least {ROTATION_SIZE + 1} active pitchers")
 
     def starter_score(p: Player) -> tuple[float, int]:
         bonus = 15 if p.position == "SP" else 0
         stamina_penalty = max(0, 45 - p.rating("stamina")) * 0.8
-        return (rt.pitching_rating(p.ratings, "SP") + bonus - stamina_penalty, -p.id)
+        perf = 0.0
+        if use_performance and p.pitching.outs >= 90:
+            perf = max(-8.0, min(8.0, (4.2 - p.pitching.era) * 3))
+        return (rt.pitching_rating(p.ratings, "SP") + bonus - stamina_penalty + perf, -p.id)
 
     rotation = sorted(pitchers, key=starter_score, reverse=True)[:ROTATION_SIZE]
     team.rotation = [p.id for p in rotation]
@@ -98,9 +118,9 @@ def auto_pitching(team: Team, players: Players) -> None:
     team.rotation_index %= ROTATION_SIZE
 
 
-def auto_configure(team: Team, players: Players) -> None:
-    auto_lineup(team, players)
-    auto_pitching(team, players)
+def auto_configure(team: Team, players: Players, use_performance: bool = False) -> None:
+    auto_lineup(team, players, use_performance)
+    auto_pitching(team, players, use_performance)
 
 
 def validate(team: Team, players: Players) -> list[str]:
@@ -114,8 +134,8 @@ def validate(team: Team, players: Players) -> list[str]:
         problems.append(
             f"Active roster has {pitcher_count} pitchers (max {MAX_ACTIVE_PITCHERS})."
         )
-    if len(set(team.active) & set(team.reserves)):
-        problems.append("A player is listed on both the active roster and reserves.")
+    if len(set(team.all_players)) != len(team.all_players):
+        problems.append("A player is listed on more than one roster (active, reserves, IL).")
 
     if len(team.lineup) != len(rt.LINEUP_POSITIONS):
         problems.append(f"Lineup has {len(team.lineup)} batters (need 9).")

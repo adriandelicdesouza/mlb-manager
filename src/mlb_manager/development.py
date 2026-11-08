@@ -9,7 +9,13 @@ from mlb_manager.models import Player
 
 DEVELOPMENT_TYPES: tuple[str, ...] = ("fast", "normal", "slow")
 PEAK_AGE: dict[str, int] = {"fast": 26, "normal": 27, "slow": 29}
-GROWTH_RATE: dict[str, float] = {"fast": 0.40, "normal": 0.28, "slow": 0.18}
+# Offseason growth (share of the gap to potential closed each winter).
+GROWTH_RATE: dict[str, float] = {"fast": 0.32, "normal": 0.22, "slow": 0.14}
+# In-season growth per monthly check, scaled by playing time.
+MONTHLY_GROWTH_RATE: dict[str, float] = {"fast": 0.05, "normal": 0.035, "slow": 0.022}
+IN_SEASON_INTERVAL_DAYS = 30
+MAX_MONTHLY_GAIN = 2.0
+MAX_MONTHLY_LOSS = 1.5
 
 
 def random_development(rng: random.Random) -> str:
@@ -33,10 +39,35 @@ def _developing_attrs(player: Player) -> list[str]:
     return attrs
 
 
-def apply_rating_change(player: Player, delta: float, rng: random.Random) -> None:
+def apply_rating_change(player: Player, delta: float, rng: random.Random, noise: float = 1.0) -> None:
     for attr in _developing_attrs(player):
         if attr in player.ratings:
-            player.ratings[attr] = rt.clamp_rating(player.ratings[attr] + delta + rng.gauss(0, 1.0))
+            player.ratings[attr] = rt.clamp_rating(player.ratings[attr] + delta + rng.gauss(0, noise))
+
+
+def in_season_development(player: Player, rng: random.Random, playing_time: float) -> int:
+    """Small monthly change during the season; returns the overall change.
+
+    Young players below their potential grow in proportion to playing time
+    (``playing_time`` ≈ 0.3 for injured players, ~0.8 in the minors, up to 1.2
+    for everyday players); veterans past 32 may slip slightly. Changes are
+    capped so ratings never swing wildly within a season.
+    """
+    before = player.overall
+    potential = max(player.potential, before)
+    peak = PEAK_AGE.get(player.development, 27)
+    if player.age <= peak and potential > before:
+        delta = (potential - before) * MONTHLY_GROWTH_RATE.get(player.development, 0.035) * playing_time
+        delta += rng.gauss(0, 0.4)
+    elif player.age >= 33:
+        delta = -0.1 * (player.age - 32) + rng.gauss(0, 0.3)
+    else:
+        delta = rng.gauss(0, 0.3)
+    delta = max(-MAX_MONTHLY_LOSS, min(MAX_MONTHLY_GAIN, delta))
+    apply_rating_change(player, delta, rng, noise=0.4)
+    after = player.overall
+    player.potential = max(player.potential, after)
+    return after - before
 
 
 def develop(player: Player, rng: random.Random) -> int:

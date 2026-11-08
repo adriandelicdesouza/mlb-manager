@@ -6,6 +6,7 @@ from pathlib import Path
 from mlb_manager import roster
 from mlb_manager.league import League
 from mlb_manager.persistence import (
+    SAVE_FORMAT_VERSION,
     SaveError,
     list_saves,
     load_league,
@@ -63,7 +64,7 @@ class PersistenceTests(unittest.TestCase):
         league = League.create(seed=35, user_team="MIA")
         path = save_league(league, self.dir / "nested" / "mia.json")
         data = json.loads(path.read_text())
-        self.assertEqual(data["format_version"], 2)
+        self.assertEqual(data["format_version"], SAVE_FORMAT_VERSION)
         self.assertEqual(len(data["league"]["teams"]), 30)
         self.assertEqual(list_saves(self.dir / "nested"), [path])
         self.assertEqual([p.name for p in (self.dir / "nested").iterdir()], ["mia.json"])
@@ -114,7 +115,7 @@ class PersistenceTests(unittest.TestCase):
         again = load_league(path)
         self.assertEqual(again.to_dict(), migrated.to_dict())
         save_league(migrated, self.dir / "v2.json")
-        self.assertEqual(json.loads((self.dir / "v2.json").read_text())["format_version"], 2)
+        self.assertEqual(json.loads((self.dir / "v2.json").read_text())["format_version"], SAVE_FORMAT_VERSION)
         migrated.sim_days(2)
 
     def test_mid_draft_round_trip(self) -> None:
