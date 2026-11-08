@@ -11,6 +11,7 @@ import math
 import random
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Any
 
 from mlb_manager import ratings as rt
 from mlb_manager.models import BattingStats, PitchingStats, Player, Team
@@ -45,6 +46,29 @@ class TeamBox:
     @property
     def runs(self) -> int:
         return sum(self.line)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "abbr": self.abbr,
+            "batting_order": [list(x) for x in self.batting_order],
+            "batting": {str(k): v.to_dict() for k, v in self.batting.items()},
+            "pitching": {str(k): v.to_dict() for k, v in self.pitching.items()},
+            "line": list(self.line),
+            "hits": self.hits,
+            "errors": self.errors,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TeamBox:
+        return cls(
+            abbr=data["abbr"],
+            batting_order=[(int(pid), pos) for pid, pos in data["batting_order"]],
+            batting={int(k): BattingStats.from_dict(v) for k, v in data["batting"].items()},
+            pitching={int(k): PitchingStats.from_dict(v) for k, v in data["pitching"].items()},
+            line=list(data["line"]),
+            hits=int(data["hits"]),
+            errors=int(data["errors"]),
+        )
 
 
 @dataclass(slots=True)
@@ -81,6 +105,33 @@ class GameResult:
         if abbr == self.away:
             return self.away_box
         raise KeyError(abbr)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "away": self.away,
+            "home": self.home,
+            "away_box": self.away_box.to_dict(),
+            "home_box": self.home_box.to_dict(),
+            "innings": self.innings,
+            "winning_pitcher": self.winning_pitcher,
+            "losing_pitcher": self.losing_pitcher,
+            "save_pitcher": self.save_pitcher,
+            "log": list(self.log),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> GameResult:
+        return cls(
+            away=data["away"],
+            home=data["home"],
+            away_box=TeamBox.from_dict(data["away_box"]),
+            home_box=TeamBox.from_dict(data["home_box"]),
+            innings=int(data["innings"]),
+            winning_pitcher=int(data["winning_pitcher"]),
+            losing_pitcher=int(data["losing_pitcher"]),
+            save_pitcher=data.get("save_pitcher"),
+            log=list(data.get("log", [])),
+        )
 
 
 # ----------------------------------------------------------------------------- helpers
@@ -342,7 +393,7 @@ class GameSimulator:
         k = BASE_K * math.exp(0.016 * (stuff - contact) + 0.004 * framing)
         bb = BASE_BB * math.exp(0.016 * (eye - control) - 0.004 * framing)
         hbp = BASE_HBP * math.exp(-0.01 * (control - 50))
-        hr = BASE_HR * math.exp(0.03 * (power - 50) - 0.02 * (movement - 50))
+        hr = BASE_HR * math.exp(0.026 * (power - 50) - 0.02 * (movement - 50))
         k, bb, hbp, hr = min(k, 0.5), min(bb, 0.25), min(hbp, 0.03), min(hr, 0.12)
         in_play = max(0.15, 1.0 - k - bb - hbp - hr)
 

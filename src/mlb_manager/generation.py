@@ -148,11 +148,11 @@ def generate_team_players(
     active: list[Player] = []
     for index, position in enumerate(ACTIVE_TEMPLATE):
         offset = BENCH_TALENT_OFFSET if index >= len(ACTIVE_TEMPLATE) - 3 else STARTER_TALENT_OFFSET
-        talent = team_strength + offset + rng.gauss(0, 6)
+        talent = team_strength + offset + rng.gauss(0, 4)
         active.append(factory.create(position, talent, age_mu=28.5, age_sigma=3.5))
     reserves: list[Player] = []
     for position in RESERVE_TEMPLATE:
-        talent = team_strength + RESERVE_TALENT_OFFSET + rng.gauss(0, 6)
+        talent = team_strength + RESERVE_TALENT_OFFSET + rng.gauss(0, 4)
         reserves.append(factory.create(position, talent, age_mu=24, age_sigma=2.5))
     return active, reserves
 
@@ -174,7 +174,7 @@ def generate_rosters(seed: int) -> tuple[dict[str, Team], dict[int, Player], int
             league=franchise.league,
             division=franchise.division,
         )
-        strength = rng.gauss(0, 4)
+        strength = rng.gauss(0, 1.5)
         active, reserves = generate_team_players(factory, strength)
         for player in (*active, *reserves):
             player.team = team.abbr
