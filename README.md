@@ -35,7 +35,7 @@ attached to a terminal).
 | `p` | Draft room | Prospect board with scouting grades and position filter; draft, sim to your pick, auto-draft |
 | `f` | Free agents | Market with asking prices; sign at the ask or make an offer |
 | `s` | Season center | Standings, statistics, career leaders, awards, milestones, franchise records, postseason, titles, retired players |
-| `g` | Game | Replay your latest game batter by batter: scoreboard, inning, outs, runners, batter vs pitcher, play log, box score |
+| `g` | Game | The dugout: play your next game live, pitch by pitch, or simulate it; last game's feed, box score and managerial report |
 
 Sidebar buttons (or `n` / `w`) simulate a day, week, month or the rest of the
 season; in the offseason the same area advances re-signing → draft → free
@@ -97,6 +97,51 @@ In the classic CLI (`--cli`), the franchise menu offers:
   how the team is doing. Very happy players perform slightly better and give a
   hometown discount; unhappy ones slump a little and may refuse to re-sign.
 
+### Managing a game from the dugout
+
+Open the **Game** tab (`g`) and choose **Play live** (classic CLI:
+SIMULATE → *Manage your next game live*). Pick how much you want to manage:
+**Assisted** (the CPU handles routine calls and stops at key moments with a
+recommendation and its reasoning), **Full manual** or **Automatic**. Each
+category (pitching, hitting, baserunning, defense, substitutions) can be set
+separately at any time, e.g. manual pitching with automatic hitting.
+
+The game is simulated as you go, never in advance: nothing you decide can
+change a pitch that has already been thrown.
+
+- **Progress** by pitch `1`, play `2`, batter `3`, half-inning `4`, inning `5`
+  or to the final `6`; `a` starts/pauses auto-play (choose its unit); `space`
+  throws one pitch. `y` / `x` accept or decline an assisted-mode suggestion.
+- **Controls** (right-hand table, Enter or click) only show what applies now:
+  - *between pitches* – pitch type (from the pitcher's real repertoire) and
+    location, pitching effort, sequencing and approach, intentional ball,
+    pitchout; take, bunt, hit-and-run, steal / delayed steal, leads,
+    send or hold the runners on the next ball in play;
+  - *between batters* – batter approach, swing aggression, discipline and
+    contact effort (remembered per hitter), pitcher approach vs this hitter,
+    pinch hitter / runner, pitching change (three-batter minimum applies),
+    intentional walk, infield / outfield depth, legal shading, defensive
+    aggressiveness;
+  - *between innings* – team hitting plan, workload preference (quick hook /
+    long leash), defensive replacements; the batting order itself is fixed by
+    rule and the screen says so.
+- **Reviews**: Lineups & defense, Bullpen (fatigue, role, availability),
+  Scouting (opponent hitters' pull tendencies and speed, their pitcher's
+  repertoire, who is due up with expected OBP/K/HR, your players' fatigue,
+  morale and health), Decisions, Plan, Box score.
+- Instructions change probabilities, never guarantee results: a slider is
+  thrown with the pitcher's own slider grade and can still hang; max effort
+  adds velocity and bite but tires him faster; a power approach trades
+  strikeouts for extra-base hits according to the hitter's power.
+- Every decision is logged with the situation, the old and new instruction,
+  who made it (you, the CPU, an accepted suggestion) and the play that
+  followed. The post-game **managerial report** grades decisions *ex ante*
+  (break-even steal rates, run expectancy, matchup expectations), not by
+  whether they worked.
+- You can save mid-game; loading resumes exactly where you left off.
+  Simulating days with a game in progress lets the CPU finish it with your
+  current instructions. Roster moves wait until the game is over.
+
 ### Front office
 
 - **Contracts & cap** – every player has a salary and years remaining. Free-agent
@@ -147,3 +192,4 @@ decisions produce the same season.
 - `CLAUDE.md` – engineering guide and conventions for contributors/agents
 - `PROJECT_STATE.md` – what is implemented and verified right now
 - `ROADMAP.md` – milestones, completed and planned
+- `docs/in-game-management.md` – live game architecture, pitch model and calibration

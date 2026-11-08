@@ -1,8 +1,21 @@
 # Project State
 
-_Last updated: 2026-11-08 · Version 0.6.0 (interactive terminal GUI)_
+_Last updated: 2026-11-08 · Version 0.8.0 (interactive in-game management)_
 
 ## Status
+**v0.8.0 lets the manager run games from the dugout, pitch by pitch.** The game
+engine is now an incremental state machine: CPU games keep the classic
+plate-appearance resolution (identical results to v0.6), while the user's
+live games are resolved pitch by pitch through decision points (between
+half-innings, batters and pitches) using a pitch-level model calibrated to
+the plate-appearance model. A `LiveGame` dugout session provides manual /
+assisted / automatic control per category, context-sensitive controls,
+progression by pitch, play, batter, half-inning, inning or game, a decision
+log with ex-ante assessments and a post-game managerial report. The GUI Game
+tab is a dugout console; the classic CLI has the same features in menus.
+(The in-game milestone was planned as Milestone 7; it ships as v0.8.0.)
+
+### v0.6.0 recap
 **v0.6.0 adds an interactive, mouse-enabled terminal GUI** built with Textual
 (`src/mlb_manager/tui/`). It runs on the unchanged `League`/domain APIs; the
 classic numbered-menu CLI remains (`--cli`, and automatically without a TTY).
@@ -54,6 +67,39 @@ league system. All 30 clubs participate in every system.
 | Awards | `awards.py` | Value formulas from stats: MVP, Cy Young, ROY (service 0), Gold Glove (≥81 games at position; P), Silver Slugger (main position) |
 | Milestones | `seasonlog.py` | 30/40/50/60 HR, 100/125/150 RBI, 200 H, 40/60 SB, 15/20 W, 200/250/300 K, 40/50 SV, no-hitters, clinches, eliminations, 10-game streaks |
 | UI | `cli.py`, `views.py`, `main.py` | Franchise menu item 14 "Front Office": Contracts & Payroll, Trade Center, Free Agency, Draft, Minor League / Prospects, Transactions; offseason steps under SIMULATE; `--salary-cap` |
+
+## Verified results (v0.8.0)
+- **Test suite: `Ran 275 tests in ~302s — OK`** (`.venv/bin/python -m unittest discover -s tests`).
+  New `test_dugout.py` (28): calibration reproduces target K/BB/HBP, repertoire
+  determinism and centring, instruction effects on the analytical PA distribution
+  (power/contact/patient/nibble), count transitions pitch by pitch, progression units
+  and pausing, immutability of completed events, context-sensitive and automated
+  (disabled-with-reason) controls, one-shot pitch calls, take, intentional ball and
+  walk, steal signs (pitchout lowers success), bunt signs, per-batter instruction
+  persistence, pitching change with the three-batter minimum, pinch hitter/runner and
+  defensive replacement, automatic / manual / assisted / mixed automation, ex-ante
+  report, fuzzed random managers (box-score integrity), live run environment, mid-game
+  save/load determinism, league integration (schedule, stats, substitutes not counted
+  as starts), sim-day auto-finish and effort workload → fatigue. `test_tui.py` (3 new):
+  start live game, keys and buttons, controls table + list modal, roster moves refused,
+  mid-game save, sim to end, finish day; assisted prompts and auto-play pause/resume;
+  simulate game, 80×24, sidebar sim finishing a live game. `test_cli.py` (1 new): CLI
+  dugout session to the final.
+- Classic engine: 400 games compared field by field with the v0.6 engine (identical,
+  incl. events). `scripts/league_health.py 6 11` output is identical to the v0.6 commit
+  (same champions KC, BOS, TEX, MIA, COL, MIL; OVR 53.3 → 55.4; R/G 4.12–4.32; every
+  roster valid); headless season ≈ 7.2 s.
+- Live vs classic over 600 matched games (live fully automated): R/G 4.12 vs 4.26,
+  HR/G 1.14 vs 1.10, AVG .243 vs .245, K% 22.9 vs 22.8, BB% 7.7 vs 7.9, 3.83 pitches/PA.
+- Whole-game extreme instructions for one club (300 games, baseline R/G 4.11; values
+  are both clubs combined): power approach 4.18 (HR/G 1.24), contact approach 3.97,
+  aggressive swings 4.17 (BB% 6.7), patient 4.17 (K% 24.9, BB% 9.0), strict discipline
+  4.24, max pitching effort 4.24 (fatigue cost), attack the zone 4.11 (BB% 6.5), nibble
+  4.37 (BB% 9.9), lean on best pitch 4.00, infield in all game 4.47, pull shading 4.08.
+  No instruction produces unrealistic scoring.
+- Live game cost ≈ 0.13 s of CPU per fully automated game.
+- Visual check of rendered GUI screenshots (160×50 and 80×24): dugout layout, controls
+  table, choice modal, final state.
 
 ## Verified results (v0.6.0)
 - **Test suite: `Ran 244 tests in ~227s — OK`**. New `test_tui.py` (13, Textual pilot):
@@ -141,8 +187,15 @@ league system. All 30 clubs participate in every system.
 - `mlb-manager --simulate-season --seed 7` still completes in ~4 s.
 
 ## Known limitations
-- The GUI game view replays the user's last game after it has been simulated
-  (no in-game decisions yet); only the user's games record play-by-play.
+- Only the user's games can be managed live; CPU games use the classic
+  plate-appearance resolution. No wild pitches, passed balls, balks, mound
+  visits or double switches; send/hold is an instruction for the next ball in
+  play, not a mid-play decision; pickoffs only happen with extended leads.
+- Live automated games score ~3 % below classic games (CPU situational tactics),
+  within the sampling noise of the calibration check.
+- Decision assessments are approximations (intentional walks ignore the next
+  hitter; defensive substitutions use the team defense rating).
+- Roster moves are blocked by the GUI/CLI during a live game, not by the domain API.
 - The GUI does not yet expose every classic-CLI screen (e.g. full schedule list,
   league transactions log, morale table); they remain available with `--cli`.
 - Career statistics start with the league's first season (generated veterans
@@ -157,4 +210,4 @@ league system. All 30 clubs participate in every system.
   offers allow 85–100 % of the ask with a deterministic chance.
 - Average active age drifts down slightly over many seasons.
 - Earlier MVP limitations still apply (≈216-day schedule, ER simplification,
-  low stolen-base volume, no in-game decisions).
+  low stolen-base volume).

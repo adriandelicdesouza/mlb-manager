@@ -136,9 +136,27 @@ financial realism.
 - [ ] Trade block and "what would it take?" asking-price feature
 - [ ] Tighter schedule packing (≈186 days), higher stolen-base volume
 
-## Milestone 7 – In-game management
-- [ ] Play-by-play mode for the user's games
-- [ ] Manual pitching changes, pinch hitters, steals, bunts, intentional walks
+## Milestone 7 – Interactive in-game management ✅ v0.8.0
+- [x] Incremental engine: decision points between half-innings, batters and pitches; classic
+      resolution for CPU games unchanged (identical league results)
+- [x] Pitch-level model (repertoires, locations, execution, zone/swing/contact) calibrated per
+      plate appearance to the existing model
+- [x] Pitching: pitch type and location calls, effort, sequencing, approach, matchup approach,
+      intentional ball / walk, pitchout, hold runners, workload preference, pitching changes
+      (three-batter minimum)
+- [x] Hitting & baserunning: approach, aggression, discipline, contact effort, take, bunt,
+      hit-and-run, steal / delayed / double steal, leads, advancement, send/hold
+- [x] Defense: infield depth (in, double play, corners), outfield depth, legal shading,
+      defensive aggressiveness, defensive replacements; pinch hitters and runners
+- [x] Manual / assisted / automatic control per category; CPU in-game brain
+- [x] Progression by pitch, play, batter, half, inning, game; auto-play with pause
+- [x] Decision log with ex-ante assessments; post-game managerial report
+- [x] Textual dugout console and classic CLI dugout; mid-game save/load
+
+## Next candidates
+- [ ] Wild pitches, passed balls and balks; mound visits; double switches
+- [ ] Mid-play send/hold decision point on extra-base attempts
+- [ ] Optional live management of postseason series with series-level plans
 
 ## Technical backlog
 - [ ] Optional type checking (mypy) and linting configuration

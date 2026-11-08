@@ -28,7 +28,9 @@ presentation layer.
 | `names.py` | Fictional name generator |
 | `generation.py` | Seeded creation of players, rosters and a full league |
 | `roster.py` | Roster rules, auto lineup/rotation, validation and repair, moves |
-| `game.py` | Plate-appearance based single-game simulation and box scores |
+| `game.py` | Game state machine: classic plate-appearance resolution (CPU games) and pitch-by-pitch live resolution with manager hooks, substitutions, snapshot/restore; box scores |
+| `tactics.py` | Instructions, pitcher repertoires, pitch-level model calibrated to the PA model, run expectancy / linear weights |
+| `dugout.py` | `LiveGame`: automation levels, CPU in-game brain, context-sensitive controls, prompts, progression, decision log + ex-ante assessments, post-game report |
 | `schedule.py` | 162-game balanced schedule generation |
 | `standings.py` | Standings, tiebreakers, games back, playoff seeding |
 | `playoffs.py` | 12-team bracket (WC bo3, DS bo5, CS bo7, WS bo7) |
@@ -48,7 +50,7 @@ presentation layer.
 | `persistence.py` | Versioned JSON save/load (atomic writes) |
 | `views.py` | Pure text rendering (tables, box scores, standings, cards) |
 | `cli.py` | Classic numbered-menu terminal UI (injectable input/output for tests) |
-| `tui/` | Textual GUI: `app.py` (screens, sim worker, files), `panes.py` (dashboard, roster, lineup, trades, draft, FA, season, game), `modals.py`, `theme.py` |
+| `tui/` | Textual GUI: `app.py` (screens, sim worker, files), `base.py` (pane base), `panes.py` (dashboard, roster, lineup, trades, draft, FA, season), `dugout.py` (Game tab / live dugout), `modals.py`, `theme.py` |
 | `main.py` | argparse entry point (`mlb-manager` console script) |
 
 ## Determinism
@@ -83,13 +85,32 @@ presentation layer.
   (talent drift, payrolls, population, roster validity). Run it after
   touching development, contracts or CPU behaviour.
 
+## Live games (dugout)
+- `simulate_game` (classic resolution) must keep its exact random-number
+  sequence: automated seasons are regression-checked against earlier versions
+  (`scripts/league_health.py 6 11`). Put new live-only behaviour behind
+  `pitch_by_pitch` / a `_RunContext`, never in the classic path.
+- Live games are pitch-by-pitch `GameSimulator`s driven through `LiveGame`
+  (`league.start_live_game()`); `play_game` consumes `league.live_game` for its
+  key. Decisions go through `LiveGame.apply(key, value)` / `answer_prompt`;
+  UIs render `LiveGame.controls()` and never call engine mutators directly.
+- Neutral instructions must reproduce the PA model: tactical effects are
+  deviations (centred pitch effects, centred location multipliers). After
+  touching `tactics.py`, compare live-auto vs classic rates over a few hundred
+  matched games (R/G, HR/G, AVG, K%, BB%).
+- Engine moves raise `RuleError` (a `ValueError`) with a user-facing reason.
+- Prompt checks must not consume randomness; CPU decisions use the session's
+  own `dugout` RNG stream so games replay identically given the same decisions.
+
 ## Testing notes
 - `tests/test_cli.py` drives the UI with a `ScriptedIO` helper (scripted
   answers; EOF ends the session) – extend it when adding menus.
 - `tests/helpers.league_at_offseason()` skips straight to a completed season
   for fast offseason tests; replay steps on a twin league to learn the
   deterministic ids a CLI script needs.
-- Full-season tests take ~6 s each; the whole suite runs in ~230 s.
+- Full-season tests take ~6 s each; the whole suite runs in ~300 s.
+- `tests/test_dugout.py` builds live games straight from `generate_rosters`
+  (`live_game()` helper) and steps them with `advance_to(...)`.
 - `tests/test_tui.py` drives the GUI with Textual's `run_test()` pilot (clicks,
   keys, resize) and asserts on league state; use `await app.workers.wait_for_complete()`
   after simulation actions (they run in a worker thread).

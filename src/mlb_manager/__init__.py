@@ -1,3 +1,3 @@
 """MLB Manager: a terminal baseball franchise management and simulation game."""
 
-__version__ = "0.6.0"
+__version__ = "0.8.0"
