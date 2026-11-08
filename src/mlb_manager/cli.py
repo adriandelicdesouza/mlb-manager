@@ -409,6 +409,9 @@ class App:
                 ("6", "To end of current round"),
                 ("5", "Through the World Series"),
             ]
+        if lg.phase in (PHASE_REGULAR, PHASE_POSTSEASON):
+            label = "Resume the game in progress (dugout)" if lg.live_game else "Manage your next game live (dugout)"
+            options.insert(0, ("7", label))
         elif lg.phase == PHASE_COMPLETE:
             self.say("The season is complete.")
             self.say(views.bracket_view(lg))
@@ -422,6 +425,9 @@ class App:
         options.append(("0", "Back"))
         choice = self.menu("Simulate", options)
         if choice == "0":
+            return
+        if choice == "7":
+            self.live_game_menu()
             return
         if choice == "1":
             reports = lg.sim_days(1)
@@ -448,6 +454,134 @@ class App:
             self.say("")
             self.say("The season is over: see the Season center (16) for the season summary, "
                      "awards and franchise history.")
+
+    # ------------------------------------------------------------------ dugout (live game)
+
+    def live_game_menu(self) -> None:
+        lg = self.league
+        if lg.live_game is None:
+            skipped = lg.advance_to_user_game()
+            if skipped:
+                self.say(views.day_summary(lg, skipped))
+            if lg.user_game_today() is None:
+                self.say("Your club has no game coming up.")
+                return
+            live = lg.start_live_game()
+            self.dirty = True
+            preset = self.menu("How much do you want to manage?", [
+                ("1", "Assisted: the CPU handles routine calls and asks you at key moments"),
+                ("2", "Full manual control"),
+                ("3", "Automatic: watch the CPU manage")])
+            live.set_preset({"1": "assisted", "2": "manual", "3": "auto"}[preset])
+        live = lg.live_game
+        assert live is not None
+        units = {"1": "pitch", "2": "play", "3": "pa", "4": "half", "5": "inning", "6": "game"}
+        while True:
+            self.say("")
+            self.say(views.rule())
+            self.say(f"{live.label}: {live.sim.away.team.abbr} @ {live.sim.home.team.abbr}")
+            self.say(views.live_line_score(lg, live))
+            self.say(views.live_situation(lg, live))
+            if live.is_over:
+                self.say(views.box_score(lg, live.result))
+                self.say("")
+                self.say(views.manager_report(live.result.manager_report))
+                reports = [lg.finish_live_game()]
+                self.dirty = True
+                self.say("")
+                self.say(views.day_summary(lg, reports))
+                return
+            self.say(views.matchup_card(lg, live))
+            self.say("Recent plays:")
+            for line in views.live_feed(lg, live, 6).splitlines():
+                self.say(f"  {line}")
+            if live.prompt is not None:
+                prompt = live.prompt
+                self.say("")
+                self.say(f"DECISION ({prompt.category}): {prompt.question}")
+                if prompt.basis:
+                    self.say(f"  Analysis: {prompt.basis}")
+                opts = [(str(i), label + (" (recommended)" if i == 1 else ""))
+                        for i, (_, label) in enumerate(prompt.options, start=1)]
+                answer = self.menu("Your call", opts)
+                self.say(live.answer_prompt(prompt.options[int(answer) - 1][0]))
+                continue
+            choice = self.menu("Dugout", [
+                ("1", "Next pitch"), ("2", "Next play"), ("3", "Next batter"), ("4", "End of half-inning"),
+                ("5", "End of inning"), ("6", "To the final"), ("7", "Managerial controls"),
+                ("8", "Reviews (lineups, bullpen, scouting, decisions)"), ("9", "Automation level"),
+                ("10", "Sim to the end without stopping"), ("0", "Leave the dugout (the game stays paused)")])
+            if choice == "0":
+                return
+            if choice in units:
+                report = live.advance(units[choice])
+                for event in report.events[-12:]:
+                    if event["k"] != "HALF":
+                        self.say(f"  {views.event_text(lg, event)}")
+            elif choice == "7":
+                self.live_controls_menu()
+            elif choice == "8":
+                self.live_reviews_menu()
+            elif choice == "9":
+                preset = self.menu("Automation", [("1", "Assisted"), ("2", "Manual"), ("3", "Automatic"),
+                                                  ("4", "Per category (via controls)"), ("0", "Back")])
+                if preset in ("1", "2", "3"):
+                    live.set_preset({"1": "assisted", "2": "manual", "3": "auto"}[preset])
+                elif preset == "4":
+                    self.live_controls_menu(group="Automation")
+            elif choice == "10":
+                live.finish()
+            self.dirty = True
+
+    def live_controls_menu(self, group: str | None = None) -> None:
+        live = self.league.live_game
+        while live is not None and not live.is_over:
+            controls = [c for c in live.controls() if group is None or c.group == group]
+            self.say("")
+            self.say(views.live_instructions(live))
+            options = []
+            for index, c in enumerate(controls, start=1):
+                value = dict(c.options).get(c.value or "", c.value or "") if c.kind == "choice" else (
+                    "ON" if c.value else "")
+                text = f"[{c.group}] {c.label}" + (f": {value}" if value else "") + (f"  ({c.scope})" if c.scope
+                                                                                      else "")
+                if not c.enabled:
+                    text += f"  - unavailable: {c.reason}"
+                options.append((str(index), text))
+            options.append(("0", "Back"))
+            choice = self.menu("Managerial controls", options)
+            if choice == "0":
+                return
+            ctrl = controls[int(choice) - 1]
+            if not ctrl.enabled:
+                self.say(ctrl.reason)
+                continue
+            value = None
+            if ctrl.kind == "choice":
+                sub = [(str(i), label) for i, (_, label) in enumerate(ctrl.options, start=1)] + [("0", "Cancel")]
+                pick = self.menu(ctrl.label, sub)
+                if pick == "0":
+                    continue
+                value = ctrl.options[int(pick) - 1][0]
+            try:
+                self.say(live.apply(ctrl.key, value))
+            except ValueError as exc:
+                self.say(f"Not allowed: {exc}")
+
+    def live_reviews_menu(self) -> None:
+        lg = self.league
+        live = lg.live_game
+        if live is None:
+            return
+        choice = self.menu("Reviews", [("1", "Lineups & defense"), ("2", "Bullpen availability"),
+                                       ("3", "Scouting: opponent tendencies, due up, fatigue"),
+                                       ("4", "Decision log"), ("5", "Current instructions"),
+                                       ("6", "Play-by-play"), ("0", "Back")])
+        text = {"1": lambda: views.live_lineups(lg, live), "2": lambda: views.bullpen_text(lg, live),
+                "3": lambda: views.scouting_text(lg, live), "4": lambda: views.decision_log(lg, live),
+                "5": lambda: views.live_instructions(live), "6": lambda: views.live_feed(lg, live, 40)}
+        if choice in text:
+            self.say(text[choice]())
 
     def say_news(self, items: list[str]) -> None:
         for item in items:

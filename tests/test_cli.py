@@ -137,4 +137,28 @@ class MainTests(unittest.TestCase):
         self.assertIn("not found", err.getvalue())
 
 
-
+class CliDugoutTests(unittest.TestCase):
+    def test_live_game_in_classic_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            league = League.create(seed=21, user_team="NYY")
+            answers = [
+                "12", "7", "2",          # simulate -> live game, full manual
+                "1", "1", "3",           # pitch, pitch, next batter
+                "7", "1", "1",           # controls: first control, first option
+                "0",                     # back
+                "8", "4",                # reviews: decision log
+                "8", "2",                # reviews: bullpen
+                "9", "3",                # automation: automatic
+                "6",                     # to the final (game ends, day finished)
+                "0",                     # quit to main menu
+                "n",                     # don't save
+            ]
+            io_ = ScriptedIO(answers)
+            app = App(io_.input, io_.output, save_dir=Path(tmp))
+            app.run(league)
+            self.assertIn("Dugout", io_.text)
+            self.assertIn("Managerial controls", io_.text)
+            self.assertIn("Managerial report", io_.text)
+            self.assertIsNone(league.live_game)
+            rec = league.records()["NYY"]
+            self.assertEqual(rec.wins + rec.losses, 1)
