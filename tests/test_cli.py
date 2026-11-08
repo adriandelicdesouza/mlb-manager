@@ -107,9 +107,10 @@ class CliTests(unittest.TestCase):
 
     def test_full_season_and_new_season_flow(self) -> None:
         league = League.create(seed=8, user_team="ATL")
-        io_ = self.run_app(["12", "5", "12", "y", "0", "n", "0"], league=league)
+        io_ = self.run_app(["12", "5", "12", "y", "12", "9", "0", "n", "0"], league=league)
         text = io_.text
         self.assertIn("CHAMPION:", text)
+        self.assertIn("offseason begins", text)
         self.assertIn("Welcome to 2027!", text)
         self.assertEqual(league.year, 2027)
 

@@ -27,6 +27,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--load", type=Path, metavar="FILE", help="load a saved franchise")
     parser.add_argument("--save-dir", type=Path, metavar="DIR",
                         help="directory for saves (default: ./saves or $MLB_MANAGER_SAVE_DIR)")
+    parser.add_argument("--salary-cap", type=float, metavar="MILLIONS",
+                        help="salary cap in $M for a new league (default: 125)")
     parser.add_argument("--simulate-season", action="store_true",
                         help="non-interactive: simulate a full season and print a summary")
     return parser
@@ -58,7 +60,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(simulate_season(args.seed if args.seed is not None else 1, args.team or "NYY"))
         return 0
 
-    app = App(save_dir=args.save_dir)
+    if args.salary_cap is not None and args.salary_cap <= 0:
+        parser.error("--salary-cap must be positive")
+    app = App(save_dir=args.save_dir, salary_cap=args.salary_cap)
     if args.load:
         try:
             league = load_league(args.load)

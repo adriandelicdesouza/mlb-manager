@@ -11,7 +11,17 @@ from mlb_manager import ratings as rt
 from mlb_manager import roster
 from mlb_manager.franchises import DIVISIONS, FRANCHISES, LEAGUE_NAMES, LEAGUES
 from mlb_manager.game import GameResult, TeamBox
-from mlb_manager.league import PHASE_COMPLETE, PHASE_POSTSEASON, DayReport, League
+from mlb_manager import contracts, development, freeagency, frontoffice, trades
+from mlb_manager.draft import DraftPick
+from mlb_manager.league import (
+    PHASE_COMPLETE,
+    PHASE_DRAFT,
+    PHASE_LABELS,
+    PHASE_POSTSEASON,
+    PHASE_REGULAR,
+    DayReport,
+    League,
+)
 from mlb_manager.models import Player, Team
 from mlb_manager.playoffs import ROUND_NAMES
 from mlb_manager.standings import (
@@ -61,11 +71,9 @@ def gb(value: float) -> str:
 
 
 def phase_label(league: League) -> str:
-    if league.phase == PHASE_POSTSEASON:
-        return "Postseason"
-    if league.phase == PHASE_COMPLETE:
-        return "Season complete"
-    return f"Regular season, day {league.day + 1}"
+    if league.phase == PHASE_REGULAR:
+        return f"Regular season, day {league.day + 1}"
+    return PHASE_LABELS.get(league.phase, league.phase)
 
 
 def team_list() -> str:
@@ -275,9 +283,13 @@ def player_card(league: League, p: Player) -> str:
         f"#{p.id} {p.name}  ({p.position}{', also ' + '/'.join(p.secondary_positions) if p.secondary_positions else ''})",
         f"Team: {team.full_name if team else 'Free agent'} [{status}]   Age: {p.age}   "
         f"Bats/Throws: {p.bats}/{p.throws}   Overall: {p.overall}",
-        "",
-        "Ratings",
+        f"Potential (scouted): {pot_text(league, p)}"
+        + (f"   Development: {p.development}" if p.team == league.user_team else ""),
+        contract_line(p),
     ]
+    if p.draft_year is not None:
+        lines.append(f"Drafted: {p.draft_year}, round {p.draft_round}, pick #{p.draft_pick}")
+    lines += ["", "Ratings"]
     groups = [rt.PITCHING_ATTRS] if p.is_pitcher else []
     groups += [rt.HITTING_ATTRS, rt.FIELDING_ATTRS]
     if "framing" in p.ratings:
@@ -494,9 +506,17 @@ def dashboard(league: League) -> str:
     elif nxt:
         where = f"vs {nxt.away}" if nxt.home == team.abbr else f"@ {nxt.home}"
         out.append(f"Next game: day {nxt.day + 1} {where}")
-    if league.phase == PHASE_COMPLETE and league.history:
+    if league.phase in (PHASE_COMPLETE, *OFFSEASON) and league.history:
         h = league.history[-1]
         out.append(f"{h['year']} champion: {h['champion']}. {team.abbr}: {h['user_result']}.")
+    if league.in_offseason:
+        out.append(f"Offseason phase: {PHASE_LABELS[league.phase]}  (continue via SIMULATE)")
+    space = contracts.cap_space(team, league.players, league.salary_cap)
+    out.append(
+        f"Payroll {contracts.money(contracts.payroll(team, league.players))} / cap "
+        f"{contracts.money(league.salary_cap)} (space {contracts.money(space)})   "
+        f"Strategy: {team.strategy}   Trade offers: {len(league.trade_offers)}"
+    )
     out.append("")
     out.append(lineup_compact(league, team))
     out.append("")
@@ -519,3 +539,237 @@ def history_view(league: League) -> str:
     rows = [[h["year"], h["champion"], h["runner_up"], f"{h['user_wins']}-{h['user_losses']}", h["user_result"]]
             for h in league.history]
     return table(["Year", "Champion", "Runner-up", league.user_team, "Result"], rows, "rllrl")
+
+
+# ----------------------------------------------------------------------------- front office
+
+OFFSEASON = ("resign", "draft", "free_agency")
+
+
+def pot_text(league: League, p: Player) -> str:
+    pot = development.scouted_potential(p, league.user_team, league.seed, league.year)
+    return f"{pot} ({development.potential_grade(pot)})"
+
+
+def contract_line(p: Player) -> str:
+    if p.team is None:
+        return "Contract: none (free agent)"
+    years = "pending free agent" if p.contract_years <= 0 else f"{p.contract_years} yr left"
+    return f"Contract: {contracts.money(p.salary)}/yr, {years} [{contracts.contract_status(p)}]"
+
+
+def org_table(league: League, members: Sequence[Player], show_role: Team | None = None) -> str:
+    rows = []
+    for p in members:
+        where = ""
+        if show_role is not None:
+            where = "MLB" if p.id in show_role.active else "MiLB"
+        rows.append([
+            p.id, p.name, p.position, p.age, p.overall,
+            development.scouted_potential(p, league.user_team, league.seed, league.year),
+            contracts.money(p.salary), p.contract_years, contracts.contract_status(p), where,
+        ])
+    return table(["ID", "Name", "Pos", "Age", "OVR", "POT", "Salary", "Yrs", "Status", "Lvl"],
+                 rows, "rllrrrrrll")
+
+
+def front_office_overview(league: League) -> str:
+    team = league.user
+    players = league.players
+    space = contracts.cap_space(team, players, league.salary_cap)
+    open_, reason = trades.trade_window(league)
+    picks = [p for p in league.draft_picks if p.owner == team.abbr]
+    lines = [
+        f"FRONT OFFICE - {team.full_name}",
+        f"Phase: {phase_label(league)}   Club strategy (league view): {team.strategy}",
+        f"Payroll: {contracts.money(contracts.payroll(team, players))}   "
+        f"Cap: {contracts.money(league.salary_cap)}   Space: {contracts.money(space)}"
+        + ("   ** OVER THE CAP **" if space < 0 else ""),
+        f"Organisation: {len(team.all_players)}/{frontoffice.MAX_ORG} players "
+        f"({len(team.active)} active, {len(team.reserves)} minor league)",
+        f"Trading: {reason}" + ("" if open_ else " (closed)"),
+        f"Pending trade offers: {len(league.trade_offers)}   Draft picks owned: {len(picks)}",
+    ]
+    return "\n".join(lines)
+
+
+def payroll_view(league: League, team: Team) -> str:
+    players = league.players
+    members = sorted(frontoffice.org(league, team), key=lambda p: (-p.salary, p.id))
+    commits = contracts.commitments(team, players)
+    years = [str(league.year + i + (0 if league.in_season or league.is_complete else 1)) for i in range(4)]
+    lines = [
+        f"{team.full_name} - contracts & payroll",
+        f"Payroll {contracts.money(contracts.payroll(team, players))}  |  Cap "
+        f"{contracts.money(league.salary_cap)}  |  Space "
+        f"{contracts.money(contracts.cap_space(team, players, league.salary_cap))}  |  Dead money "
+        f"{contracts.money(team.dead_money)}",
+        "",
+        "Future commitments",
+        table(years, [[contracts.money(c) for c in commits]], "rrrr"),
+        "",
+        org_table(league, members, team),
+    ]
+    expiring = [p for p in members if p.contract_years <= 1]
+    if expiring:
+        lines += ["", "Approaching free agency: " + ", ".join(
+            f"{p.name} ({contracts.contract_status(p)})" for p in expiring[:12]
+        )]
+    return "\n".join(lines)
+
+
+def picks_view(league: League, owner: str) -> str:
+    picks = sorted((p for p in league.draft_picks if p.owner == owner), key=lambda p: (p.year, p.round, p.original))
+    if not picks:
+        return f"{owner} owns no draft picks."
+    return table(["Pick code", "Year", "Rd", "Original club"],
+                 [[p.pick_id, p.year, p.round, p.original] for p in picks], "lrrl")
+
+
+def trade_partner_view(league: League, abbr: str) -> str:
+    team = league.teams[abbr]
+    members = sorted(trades.tradable_players(league, team), key=lambda p: (-p.overall, p.id))
+    return "\n".join([
+        f"{team.full_name} ({abbr}) - strategy: {team.strategy}, payroll "
+        f"{contracts.money(contracts.payroll(team, league.players))}",
+        org_table(league, members, team),
+        "",
+        "Draft picks",
+        picks_view(league, abbr),
+    ])
+
+
+def proposal_view(league: League, prop: trades.TradeProposal) -> str:
+    lines = []
+    for abbr in (prop.team_a, prop.team_b):
+        pids, picks = prop.assets_of(abbr)
+        lines.append(f"{abbr} gives:")
+        for pid in pids:
+            p = league.players[pid]
+            lines.append(f"   {p.name} ({p.position}, age {p.age}, {p.overall} OVR, POT "
+                         f"{pot_text(league, p)}, {contracts.money(p.salary)} x {p.contract_years})")
+        for pick_id in picks:
+            pick = trades.get_pick(league, pick_id)
+            lines.append(f"   {pick.label() if pick else pick_id} pick ({pick_id})")
+        if not pids and not picks:
+            lines.append("   nothing")
+    return "\n".join(lines)
+
+
+def offers_view(league: League) -> str:
+    if not league.trade_offers:
+        return "No pending trade offers."
+    out = []
+    for offer in league.trade_offers:
+        out.append(f"Offer #{offer.offer_id} from {offer.proposal.team_a} (expires day {offer.expires_day + 1})")
+        out.append(proposal_view(league, offer.proposal))
+        out.append("")
+    return "\n".join(out).rstrip()
+
+
+def free_agents_view(league: League, position: str | None = None, limit: int = 25) -> str:
+    pool = freeagency.free_agents(league)
+    if position:
+        pool = [p for p in pool if p.position == position]
+    rows = []
+    for p in pool[:limit]:
+        salary, years = freeagency.asking(league, p)
+        rows.append([p.id, p.name, p.position, p.age, p.overall,
+                     development.scouted_potential(p, league.user_team, league.seed, league.year),
+                     contracts.money(salary), years])
+    space = contracts.cap_space(league.user, league.players, league.salary_cap)
+    header = (f"Free agents ({len(pool)} available{' at ' + position if position else ''})  |  "
+              f"Your cap space {contracts.money(space)}  |  Org "
+              f"{len(league.user.all_players)}/{frontoffice.MAX_ORG}")
+    if not rows:
+        return header + "\nNo free agents match."
+    return header + "\n" + table(["ID", "Name", "Pos", "Age", "OVR", "POT", "Asking", "Yrs"], rows, "rllrrrrr")
+
+
+def draft_board(league: League, limit: int = 20) -> str:
+    draft = league.draft
+    if draft is None or not draft.pool:
+        return "No prospects available."
+    prospects = [league.players[pid] for pid in draft.pool]
+    def scouted(p: Player) -> int:
+        return development.scouted_potential(p, league.user_team, league.seed, league.year)
+    prospects.sort(key=lambda p: (-(scouted(p) + p.overall * 0.3), p.id))
+    rows = [[i, p.id, p.name, p.position, p.age, p.overall, scouted(p), development.potential_grade(scouted(p))]
+            for i, p in enumerate(prospects[:limit], 1)]
+    return table(["Rank", "ID", "Name", "Pos", "Age", "OVR", "POT", "Grade"], rows, "rrllrrrl")
+
+
+def draft_room_view(league: League) -> str:
+    draft = league.draft
+    if draft is None or league.phase != PHASE_DRAFT:
+        mine = sorted(
+            (p for p in league.draft_picks if p.owner == league.user_team), key=lambda p: (p.year, p.round)
+        )
+        lines = ["The amateur draft is held during the offseason (after the re-signing period).",
+                 "Draft order: worst regular-season record first; playoff clubs pick last.", "",
+                 "Your picks:"]
+        lines += [f"  {p.pick_id}  {p.label()}" for p in mine] or ["  none"]
+        if draft is not None and draft.selections:
+            lines += ["", f"Your {draft.year} draft class:"]
+            for sel in draft.selections:
+                if sel.team == league.user_team and sel.player_id in league.players:
+                    p = league.players[sel.player_id]
+                    lines.append(f"  #{sel.overall_pick} R{sel.round} {p.name} {p.position} ({p.overall} OVR)")
+        return "\n".join(lines)
+    clock = league.draft_on_clock()
+    lines = [f"{draft.year} AMATEUR DRAFT - {len(draft.selections)}/{draft.total_picks} picks made"]
+    if clock:
+        number, rnd, owner = clock
+        flag = "  <== YOU ARE ON THE CLOCK" if owner == league.user_team else ""
+        lines.append(f"On the clock: pick #{number} (round {rnd}) - {owner}{flag}")
+    upcoming = []
+    for index in range(len(draft.selections), draft.total_picks):
+        rnd, original = draft.slot(index)
+        if league.draft_owner(rnd, original) == league.user_team:
+            upcoming.append(f"#{index + 1} (R{rnd})")
+    lines.append("Your remaining picks: " + (", ".join(upcoming) or "none"))
+    recent = draft.selections[-5:]
+    if recent:
+        lines.append("")
+        lines.append("Recent picks:")
+        for sel in recent:
+            p = league.players.get(sel.player_id)
+            if p:
+                lines.append(f"  #{sel.overall_pick} {sel.team}: {p.name}, {p.position}, age {p.age}")
+    lines += ["", "Your scouts' board (POT is a scouting estimate):", draft_board(league)]
+    return "\n".join(lines)
+
+
+def prospects_view(league: League, team: Team) -> str:
+    players = league.players
+    minors = sorted(roster.reserve_players(team, players), key=lambda p: (-p.overall, p.id))
+    young = sorted((p for p in roster.active_players(team, players) if p.age <= 24), key=lambda p: (-p.overall, p.id))
+    rows = []
+    for p in minors:
+        pot = development.scouted_potential(p, league.user_team, league.seed, league.year)
+        rows.append([p.id, p.name, p.position, p.age, p.overall, pot, development.potential_grade(pot),
+                     p.development, contracts.money(p.salary), p.contract_years])
+    lines = [
+        f"{team.full_name} - minor league system ({len(minors)} players; organisation "
+        f"{len(team.all_players)}/{frontoffice.MAX_ORG}; active {len(team.active)}/{roster.MAX_ACTIVE})",
+        table(["ID", "Name", "Pos", "Age", "OVR", "POT", "Grd", "Dev", "Salary", "Yrs"], rows, "rllrrrllrr")
+        if rows else "No minor league players.",
+    ]
+    if young:
+        lines += ["", "Young players on the active roster: " + ", ".join(
+            f"{p.name} ({p.position}, {p.age}, {p.overall}/{pot_text(league, p)})" for p in young
+        )]
+    if len(team.all_players) > frontoffice.MAX_ORG:
+        lines += ["", f"WARNING: organisation is over the {frontoffice.MAX_ORG}-player limit. "
+                      "The lowest-value players will be released before next season unless you act."]
+    return "\n".join(lines)
+
+
+def transactions_view(league: League, limit: int = 25) -> str:
+    if not league.transactions:
+        return "No transactions yet."
+    return "Recent league transactions\n" + "\n".join(f"  {t}" for t in league.transactions[-limit:])
+
+
+def pick_label(pick: DraftPick) -> str:
+    return f"{pick.pick_id} ({pick.label()})"

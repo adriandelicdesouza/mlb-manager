@@ -10,9 +10,18 @@ import random
 from collections.abc import Callable
 from pathlib import Path
 
-from mlb_manager import __version__, roster, views
+from mlb_manager import __version__, contracts, freeagency, frontoffice, roster, trades, views
 from mlb_manager.franchises import FRANCHISES_BY_ABBR
-from mlb_manager.league import PHASE_COMPLETE, PHASE_POSTSEASON, PHASE_REGULAR, League
+from mlb_manager.league import (
+    PHASE_COMPLETE,
+    PHASE_DRAFT,
+    PHASE_FREE_AGENCY,
+    PHASE_POSTSEASON,
+    PHASE_REGULAR,
+    PHASE_RESIGN,
+    ContractError,
+    League,
+)
 from mlb_manager.persistence import (
     SaveError,
     default_save_dir,
@@ -34,7 +43,9 @@ class App:
         input_fn: Callable[[str], str] = input,
         output_fn: Callable[[str], None] = print,
         save_dir: Path | None = None,
+        salary_cap: float | None = None,
     ) -> None:
+        self.salary_cap = salary_cap
         self._input = input_fn
         self._output = output_fn
         self.save_dir = save_dir or default_save_dir()
@@ -149,7 +160,7 @@ class App:
             else:
                 seed = random.SystemRandom().randrange(1, 10**6)
         self.say(f"Generating league with seed {seed} ...")
-        self.league = League.create(seed=seed, user_team=team)
+        self.league = League.create(seed=seed, user_team=team, salary_cap=self.salary_cap)
         self.save_path = None
         self.dirty = True
         self.say(f"You are now the manager of the {self.league.user.full_name}.")
@@ -199,6 +210,7 @@ class App:
             "11": self.show_bracket,
             "12": self.simulate_menu,
             "13": self.save_menu,
+            "14": self.front_office_menu,
         }
         while True:
             self.say("")
@@ -220,6 +232,7 @@ class App:
                     ("11", "Postseason bracket & history"),
                     ("12", "SIMULATE"),
                     ("13", "Save franchise"),
+                    ("14", "FRONT OFFICE (contracts, trades, draft, free agency, prospects)"),
                     ("0", "Quit to main menu"),
                 ],
             )
@@ -392,13 +405,15 @@ class App:
                 ("6", "To end of current round"),
                 ("5", "Through the World Series"),
             ]
-        else:
+        elif lg.phase == PHASE_COMPLETE:
             self.say("The season is complete.")
             self.say(views.bracket_view(lg))
-            if self.confirm(f"Start the {lg.year + 1} season?"):
-                lg.start_new_season()
+            if self.confirm("Begin the offseason (aging, development, expiring contracts)?"):
+                self.say_news(lg.begin_offseason())
                 self.dirty = True
-                self.say(f"Welcome to {lg.year}! Ratings have been updated for aging and development.")
+            return
+        else:
+            self.offseason_menu()
             return
         options.append(("0", "Back"))
         choice = self.menu("Simulate", options)
@@ -426,6 +441,375 @@ class App:
         if lg.phase == PHASE_COMPLETE:
             self.say("")
             self.say(views.bracket_view(lg))
+
+    def say_news(self, items: list[str]) -> None:
+        for item in items:
+            self.say(f"  * {item}")
+
+    def offseason_menu(self) -> None:
+        lg = self.league
+        self.say(f"Offseason - {views.phase_label(lg)}")
+        if lg.phase == PHASE_RESIGN:
+            pending = lg.pending_free_agents(lg.user)
+            self.say(f"You have {len(pending)} pending free agent(s).")
+            options = [("1", "Contracts & payroll (re-sign players)"),
+                       ("2", "Finish re-signing period and go to the draft")]
+        elif lg.phase == PHASE_DRAFT:
+            options = [("1", "Enter the draft room"),
+                       ("2", "Auto-complete the draft and open free agency")]
+        else:
+            options = [("1", "Free agency market"),
+                       ("2", f"Finish free agency and start the {lg.year + 1} season")]
+        options += [("9", "Auto-run the rest of the offseason (CPU makes your decisions)"), ("0", "Back")]
+        choice = self.menu("Offseason", options)
+        if choice == "0":
+            return
+        if choice == "1":
+            {PHASE_RESIGN: self.contracts_menu, PHASE_DRAFT: self.draft_menu,
+             PHASE_FREE_AGENCY: self.free_agency_menu}[lg.phase]()
+            return
+        if choice == "2":
+            if lg.phase == PHASE_RESIGN and lg.pending_free_agents(lg.user):
+                if not self.confirm("Unsigned players will leave as free agents. Continue?"):
+                    return
+            if lg.phase == PHASE_FREE_AGENCY and len(lg.user.all_players) > frontoffice.MAX_ORG:
+                self.say(f"Your organisation exceeds {frontoffice.MAX_ORG}; the lowest-value "
+                         "players will be released automatically.")
+                if not self.confirm("Continue?"):
+                    return
+            self.say_news(lg.advance_offseason())
+        else:
+            while lg.in_offseason:
+                self.say_news(lg.advance_offseason(auto_user=True))
+        self.dirty = True
+        if lg.phase == PHASE_REGULAR:
+            self.say(f"Welcome to {lg.year}!")
+
+    # ------------------------------------------------------------------ front office
+
+    def front_office_menu(self) -> None:
+        actions: dict[str, Callable[[], None]] = {
+            "1": self.contracts_menu,
+            "2": self.trade_center,
+            "3": self.free_agency_menu,
+            "4": self.draft_menu,
+            "5": self.prospects_menu,
+            "6": lambda: self.say(views.transactions_view(self.league)),
+        }
+        while True:
+            self.say("")
+            self.say(views.front_office_overview(self.league))
+            choice = self.menu("Front Office", [
+                ("1", "Contracts & Payroll"),
+                ("2", f"Trade Center ({len(self.league.trade_offers)} offers)"),
+                ("3", "Free Agency"),
+                ("4", "Draft"),
+                ("5", "Minor League / Prospects"),
+                ("6", "League transactions"),
+                ("0", "Back"),
+            ])
+            if choice == "0":
+                return
+            actions[choice]()
+
+    def contracts_menu(self) -> None:
+        lg, team = self.league, self.league.user
+        while True:
+            self.say("")
+            self.say(views.payroll_view(lg, team))
+            choice = self.menu("Contracts & Payroll", [
+                ("1", "Re-sign a pending free agent / extend a final-year player"),
+                ("2", "Release a player"),
+                ("0", "Back"),
+            ])
+            if choice == "0":
+                return
+            pid = self.ask_int("Player ID (Enter to cancel): ", 1)
+            if pid is None or pid not in lg.players:
+                continue
+            player = lg.players[pid]
+            if choice == "1":
+                salary, years = lg.resign_ask(player)
+                self.say(f"{player.name} asks for {contracts.money(salary)} per year "
+                         f"(prefers {years} years, max {contracts.max_years(player)}).")
+                chosen = self.ask_int(f"Years [{years}]: ", 1, contracts.max_years(player))
+                chosen = chosen or years
+                if not self.confirm(f"Sign {player.name} for {chosen} yr at {contracts.money(salary)}/yr?"):
+                    continue
+                try:
+                    self.say(lg.extend_contract(team, pid, chosen))
+                    self.dirty = True
+                except ContractError as exc:
+                    self.say(f"Not allowed: {exc}")
+            else:
+                cost = player.salary if player.contract_years > 0 else 0.0
+                if not self.confirm(f"Release {player.name}? Dead money this season: {contracts.money(cost)}."):
+                    continue
+                try:
+                    self.say(lg.release(team, pid))
+                    self.dirty = True
+                except roster.RosterError as exc:
+                    self.say(f"Not allowed: {exc}")
+
+    # -- trades --------------------------------------------------------------------------
+
+    def _parse_ids(self, raw: str) -> list[int] | None:
+        try:
+            return [int(x) for x in raw.replace(",", " ").split()]
+        except ValueError:
+            self.say("Please enter numeric player IDs separated by commas.")
+            return None
+
+    def _ask_assets(self, prompt: str, default: list) -> list | None:  # noqa: ANN001
+        shown = ", ".join(str(x) for x in default)
+        hint = f" [{shown}] (blank = keep, '-' = none)" if default else " (blank = none)"
+        raw = self.ask(f"{prompt}{hint}: ")
+        if raw == "":
+            return list(default)
+        if raw == "-":
+            return []
+        return raw
+
+    def trade_center(self) -> None:
+        lg = self.league
+        while True:
+            self.say("")
+            open_, reason = trades.trade_window(lg)
+            self.say(f"TRADE CENTER - {reason}")
+            choice = self.menu("Trade Center", [
+                ("1", "Propose a trade"),
+                ("2", f"Incoming offers ({len(lg.trade_offers)})"),
+                ("3", "Scout another organisation"),
+                ("4", "My draft picks"),
+                ("0", "Back"),
+            ])
+            if choice == "0":
+                return
+            if choice == "1":
+                abbr = self.ask("Trade partner (club abbreviation): ").upper()
+                if abbr not in lg.teams or abbr == lg.user_team:
+                    self.say("Unknown or invalid club.")
+                    continue
+                self.say(views.trade_partner_view(lg, abbr))
+                self.build_trade(trades.TradeProposal(lg.user_team, abbr))
+            elif choice == "2":
+                self.offers_menu()
+            elif choice == "3":
+                abbr = self.ask("Club abbreviation: ").upper()
+                if abbr in lg.teams:
+                    self.say(views.trade_partner_view(lg, abbr))
+            else:
+                self.say(views.picks_view(lg, lg.user_team))
+
+    def build_trade(self, prop: trades.TradeProposal) -> None:
+        lg = self.league
+        self.say("Enter player IDs separated by commas, and pick codes like 2027-R1-NYY.")
+        fields = [
+            ("Your players to send", "a_players", True),
+            ("Your picks to send", "a_picks", False),
+            (f"{prop.team_b} players you want", "b_players", True),
+            (f"{prop.team_b} picks you want", "b_picks", False),
+        ]
+        for prompt, attr, numeric in fields:
+            raw = self._ask_assets(prompt, getattr(prop, attr))
+            if isinstance(raw, str):
+                values = self._parse_ids(raw) if numeric else raw.replace(",", " ").upper().split()
+                if values is None:
+                    return
+                raw = values
+            setattr(prop, attr, raw)
+        self.submit_trade(prop)
+
+    def submit_trade(self, prop: trades.TradeProposal) -> None:
+        lg = self.league
+        self.say("")
+        self.say(views.proposal_view(lg, prop))
+        errors = trades.validate(lg, prop)
+        if errors:
+            self.say("Trade not allowed:")
+            for err in errors:
+                self.say(f"  - {err}")
+            return
+        verdict = trades.evaluate(lg, prop)
+        self.say(verdict.message)
+        if verdict.accepted:
+            if self.confirm("Complete this trade?"):
+                self.execute_trade(prop)
+            return
+        alt = trades.counter(lg, prop)
+        if alt is None:
+            return
+        self.say("")
+        self.say(f"{prop.team_b} counters with:")
+        self.say(views.proposal_view(lg, alt))
+        if self.confirm("Accept the counter-offer?"):
+            self.execute_trade(alt)
+
+    def execute_trade(self, prop: trades.TradeProposal) -> None:
+        try:
+            notes = trades.execute(self.league, prop)
+        except trades.TradeError as exc:
+            self.say(f"Trade failed: {exc}")
+            return
+        self.dirty = True
+        for note in notes:
+            self.say(note)
+            self.league.add_news(note)
+
+    def offers_menu(self) -> None:
+        lg = self.league
+        self.say(views.offers_view(lg))
+        if not lg.trade_offers:
+            return
+        offer_id = self.ask_int("Offer number to respond to (Enter to go back): ", 1)
+        offer = lg.offer_by_id(offer_id) if offer_id else None
+        if offer is None:
+            return
+        choice = self.menu(f"Offer #{offer.offer_id} from {offer.proposal.team_a}",
+                           [("1", "Accept"), ("2", "Reject"), ("3", "Counter"), ("0", "Back")])
+        if choice == "1":
+            try:
+                notes = lg.accept_offer(offer.offer_id)
+            except trades.TradeError as exc:
+                self.say(str(exc))
+                return
+            self.dirty = True
+            for note in notes:
+                self.say(note)
+                lg.add_news(note)
+        elif choice == "2":
+            lg.reject_offer(offer.offer_id)
+            self.dirty = True
+            self.say("Offer rejected.")
+        elif choice == "3":
+            lg.reject_offer(offer.offer_id)
+            self.say("Build your counter-offer (current terms shown in brackets).")
+            self.build_trade(offer.proposal.reversed())
+
+    # -- free agency ---------------------------------------------------------------------
+
+    def free_agency_menu(self) -> None:
+        lg = self.league
+        position: str | None = None
+        limit = 25
+        while True:
+            self.say("")
+            self.say(views.free_agents_view(lg, position, limit))
+            choice = self.menu("Free Agency", [
+                ("1", "Make an offer"), ("2", "Filter by position"), ("3", "Show more"), ("0", "Back"),
+            ])
+            if choice == "0":
+                return
+            if choice == "2":
+                raw = self.ask("Position (SP, RP, C, 1B, ... ; blank = all): ").upper()
+                position = raw or None
+                continue
+            if choice == "3":
+                limit += 25
+                continue
+            pid = self.ask_int("Free agent ID (Enter to cancel): ", 1)
+            if pid is None or pid not in lg.players:
+                continue
+            player = lg.players[pid]
+            salary, years = freeagency.asking(lg, player)
+            self.say(f"{player.name} is asking for {years} yr at {contracts.money(salary)}/yr.")
+            chosen_years = self.ask_int(f"Years [{years}]: ", 1, contracts.MAX_CONTRACT_YEARS) or years
+            raw = self.ask(f"Salary per year in $M [{salary:.2f}]: ")
+            try:
+                offer = float(raw) if raw else salary
+            except ValueError:
+                self.say("Invalid salary.")
+                continue
+            try:
+                self.say(freeagency.sign_free_agent(lg, lg.user, pid, offer, chosen_years))
+                self.dirty = True
+            except freeagency.FreeAgencyError as exc:
+                self.say(str(exc))
+
+    # -- draft ---------------------------------------------------------------------------
+
+    def draft_menu(self) -> None:
+        lg = self.league
+        while True:
+            self.say("")
+            self.say(views.draft_room_view(lg))
+            if lg.phase != PHASE_DRAFT or lg.draft_on_clock() is None:
+                return
+            clock = lg.draft_on_clock()
+            options = [("1", "Sim to my next pick"), ("3", "Auto-draft the rest (scouts pick for you)"),
+                       ("4", "Show a longer board"), ("0", "Back")]
+            if clock and clock[2] == lg.user_team:
+                options.insert(0, ("2", "Make my selection"))
+            choice = self.menu("Draft room", options)
+            if choice == "0":
+                return
+            self.dirty = True
+            if choice == "1":
+                for sel in lg.draft_until_user():
+                    p = lg.players[sel.player_id]
+                    self.say(f"  #{sel.overall_pick} {sel.team}: {p.name} ({p.position}, {p.age})")
+            elif choice == "2":
+                pid = self.ask_int("Prospect ID to draft: ", 1)
+                if pid is None:
+                    continue
+                try:
+                    sel = lg.draft_select(pid)
+                except ValueError as exc:
+                    self.say(str(exc))
+                    continue
+                self.say(f"With pick #{sel.overall_pick} you select {lg.players[pid].name}!")
+            elif choice == "3":
+                lg.draft_auto_rest()
+                self.say("The draft is complete. Finish the draft phase from SIMULATE to open free agency.")
+            else:
+                self.say(views.draft_board(lg, limit=60))
+
+    # -- minor leagues -------------------------------------------------------------------
+
+    def prospects_menu(self) -> None:
+        lg, team = self.league, self.league.user
+        while True:
+            self.say("")
+            self.say(views.prospects_view(lg, team))
+            choice = self.menu("Minor League / Prospects", [
+                ("1", "Promote a player to the active roster"),
+                ("2", "Demote an active player to the minors"),
+                ("3", "Swap an active player with a minor leaguer"),
+                ("4", "Release a player"),
+                ("5", "Auto-organise (best 26 on the active roster)"),
+                ("0", "Back"),
+            ])
+            if choice == "0":
+                return
+            try:
+                if choice == "1":
+                    pid = self.ask_int("Minor leaguer ID: ", 1)
+                    if pid is None:
+                        continue
+                    roster.promote(team, lg.players, pid)
+                    self.say(f"{lg.players[pid].name} promoted.")
+                elif choice == "2":
+                    pid = self.ask_int("Active player ID: ", 1)
+                    if pid is None:
+                        continue
+                    for note in roster.demote(team, lg.players, pid):
+                        self.say(f"  - {note}")
+                    self.say(f"{lg.players[pid].name} sent to the minors. Open active spots are "
+                             "filled automatically before the next game.")
+                elif choice == "3":
+                    self.roster_moves_menu()
+                elif choice == "4":
+                    pid = self.ask_int("Player ID: ", 1)
+                    if pid is None or pid not in lg.players:
+                        continue
+                    if self.confirm(f"Release {lg.players[pid].name}?"):
+                        self.say(lg.release(team, pid))
+                else:
+                    frontoffice.optimize_roster(lg, team)
+                    self.say("Active roster, lineup and pitching staff rebuilt from the whole organisation.")
+                self.dirty = True
+            except roster.RosterError as exc:
+                self.say(f"Not allowed: {exc}")
 
     # ------------------------------------------------------------------ saving
 
