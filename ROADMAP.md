@@ -16,28 +16,63 @@
 - [x] JSON franchise saves
 - [x] Multi-season play with aging/development
 
-Verified: 79 automated tests passing; interactive app exercised end to end.
+## Milestone 2 – GM & franchise management ✅ v0.2.0
+Revised scope (replaces the earlier "Depth" and "Front office" milestones):
+lightweight, Retro Bowl-style front office adapted to MLB. Gameplay over
+financial realism.
 
-## Milestone 2 – Depth (next)
-- [ ] Injuries and injured list (IL) with automatic call-ups for AI clubs
-- [ ] AI roster management (call-ups, rotation changes on fatigue/slumps)
-- [ ] Separate postseason and career statistics
-- [ ] Platoon/split stats and per-team season stats screens
-- [ ] Tighter schedule packing (≈186 days), occasional doubleheaders
-- [ ] Higher stolen-base volume and more baserunning nuance (tag-ups on 2B, holds)
+**Contracts & cap**
+- [x] Salary, contract length, years remaining, expiration status for every player
+- [x] Configurable hard salary cap (default $125M, `--salary-cap`) for signings and trades
+- [x] Own-player re-signing/extensions allowed above the cap
+- [x] Releases with current-season dead money
+- [x] Payroll, cap space, future commitments, approaching free agency views
 
-## Milestone 3 – Front office
-- [ ] Trades with AI valuation
-- [ ] Contracts, payroll and budget
-- [ ] Free agency and amateur draft
-- [ ] Player potential and minor-league development
-- [ ] Awards (MVP, Cy Young, Rookie of the Year)
+**Trades**
+- [x] Player-for-player, multi-player, draft-pick and mixed trades
+- [x] CPU valuation: ability, potential, age, position, roster need, depth,
+      contract surplus, competitive strategy
+- [x] Contending / balanced / rebuilding CPU strategies
+- [x] CPU counter-offers; CPU-initiated offers to the user (accept/reject/counter)
+- [x] CPU-to-CPU trades (contenders buy veterans from rebuilders)
+- [x] Anti-exploit: diminishing returns on bundles, contract-aware values,
+      acceptance premium, deterministic answers, cap and roster checks, trade deadline
+
+**Draft**
+- [x] Annual 5-round draft, 200-prospect generated classes with realistic positions
+- [x] Order from previous standings (worst first, playoff clubs last)
+- [x] CPU selections from strategy-weighted, imperfect scouting boards
+- [x] Prospect potential, development trajectories, rookie contracts
+- [x] Tradable picks for the next three drafts
+
+**Free agency**
+- [x] Market of released/expiring players; asking contracts; negotiation band
+- [x] CPU signings driven by need, strategy and cap space
+
+**Development & minor leagues**
+- [x] Growth toward potential (fast / normal / slow), breakouts and busts
+- [x] Plateau then decline with age; retirements
+- [x] Reserves act as the minor league system (organisation limit 45)
+- [x] Promote / demote / swap / release; CPU best-26 organisation management
+- [x] Imperfect scouting (own organisation scouted more accurately)
+
+**Offseason flow**: season complete → re-signing period → draft → free agency → next season.
+
+**Technical**: save format v2 with automatic v1 migration; deterministic seeds preserved.
+
+## Milestone 3 – Depth (next)
+- [ ] Injuries and injured list, with CPU call-ups
+- [ ] Separate postseason and career statistics; awards (MVP, Cy Young, ROY)
+- [ ] Player morale / contract-year effects; no-trade clauses
+- [ ] Optional luxury tax (soft cap) as an alternative cap mode
+- [ ] Trade block and "what would it take?" asking-price feature
+- [ ] Tighter schedule packing (≈186 days), higher stolen-base volume
 
 ## Milestone 4 – In-game management
 - [ ] Play-by-play mode for the user's games
 - [ ] Manual pitching changes, pinch hitters, steals, bunts, intentional walks
 
 ## Technical backlog
-- [ ] Save-format migrations when `SAVE_FORMAT_VERSION` changes
 - [ ] Optional type checking (mypy) and linting configuration
-- [ ] Performance profiling of the PA loop (currently ~1.5 ms/game)
+- [ ] Further sim performance work (~4 s per season today)
+- [ ] League gets slightly younger over many seasons (avg active age 28 → ~27 after 6 years); revisit aging curve

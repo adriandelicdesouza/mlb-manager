@@ -1,48 +1,50 @@
 # Project State
 
-_Last updated: 2026-11-08 · Version 0.1.0 (MVP)_
+_Last updated: 2026-11-08 · Version 0.2.0 (GM expansion)_
 
 ## Status
-**Playable MVP complete.** A manager can pick any of the 30 clubs, manage a
-generated roster, simulate a full 162-game season and 12-team postseason,
-start subsequent seasons, and save/load franchises as JSON.
+**Playable multi-season franchise game with a GM layer.** On top of the v0.1
+MVP (simulation, schedule, playoffs, saves), managers now run a front office:
+contracts and a salary cap, trades (players and picks) with a strategy-driven
+CPU, an annual amateur draft, free agency, prospect development and a minor
+league system. All 30 clubs participate in every system.
 
 ## Implemented (all verified)
 | Area | Module | Notes |
 | --- | --- | --- |
-| Franchises | `franchises.py` | 30 clubs, AL/NL × East/Central/West, natural rivals |
-| Players | `models.py`, `ratings.py`, `names.py`, `generation.py` | Fictional names; 1–99 ratings; position-specific profiles (catcher framing, pitcher stuff/control/movement/stamina, fielding/arm/range weighted per position); secondary positions; out-of-position penalty |
-| Rosters | `roster.py` | 26 active (max 13 pitchers) + 14 reserves per club; auto lineup/rotation/closer; validation + auto-repair; promote/demote swaps; lineup, position, rotation and closer edits |
-| Game sim | `game.py` | Plate-appearance model with platoon splits, framing, team defense, baserunning, steals, DPs, errors, sac flies, pitch counts, fatigue, bullpen roles, extra-inning runner, W/L/SV, box score + scoring log |
-| Schedule | `schedule.py` | 2,430 games; 162 per club (13×div, 6–7×league, 46 interleague incl. 4 vs rival); 80–82 home games; no doubleheaders |
-| Standings | `standings.py` | W/L/PCT/GB, home/away, L10, streak, run diff; ties: H2H → division record → run diff → abbreviation |
-| Playoffs | `playoffs.py` | 6 per league; WC bo3, DS bo5 (2-2-1), CS bo7 (2-3-2), WS bo7 (home field to better record) |
-| Season | `league.py` | Day-by-day advancement, starter rest/rotation, fatigue recovery, stats, leaders, phases, aging/development into new seasons |
-| Saves | `persistence.py` | Versioned JSON (`format_version: 1`), atomic writes, clear errors |
-| UI | `cli.py`, `views.py`, `main.py` | Interactive menus; views are pure functions; scripted-input tests |
+| Simulation core | `game.py`, `schedule.py`, `standings.py`, `playoffs.py` | Unchanged from v0.1 (engine preserved) |
+| Contracts & cap | `contracts.py` | Market salary curve; asking contracts; hard cap for FA/trades; own re-signs may exceed it; dead money on release; commitments |
+| Development | `development.py` | Potential, fast/normal/slow growth, breakouts/busts, decline after 31, retirements, noisy scouting (own org more accurate) |
+| Draft | `draft.py` | 5 rounds × 30, 200-prospect classes (~48% pitchers, ages 18/21/22), worst-first order with playoff clubs last, tradable picks 3 years out, CPU boards by strategy |
+| Front office | `frontoffice.py` | Strategy assignment, player/pick valuation, best-26 optimisation, depth fill, cut-down to 45, initialisation/migration |
+| Trades | `trades.py` | Validation (ownership, pending FAs, deadline, cap, depth, roster size), evaluation with diminishing returns, counters, CPU offers to user, CPU-CPU trades |
+| Free agency | `freeagency.py` | Asking prices (cheaper in-season), negotiation band, user signings, CPU signing rounds |
+| League flow | `league.py` | Weekly CPU front-office activity in season; offseason phases resign → draft → free agency → new season |
+| Saves | `persistence.py` | Format v2; v1 saves migrated automatically and deterministically |
+| UI | `cli.py`, `views.py`, `main.py` | Franchise menu item 14 "Front Office": Contracts & Payroll, Trade Center, Free Agency, Draft, Minor League / Prospects, Transactions; offseason steps under SIMULATE; `--salary-cap` |
 
 ## Verified results
-- `.venv/bin/pip install -e .` installs cleanly (no warnings).
-- **Test suite: `Ran 79 tests in ~27s — OK`** (`python -m unittest discover -s tests`).
-- Launched the real console script with piped input and exercised: new
-  franchise, dashboard, roster, lineup edits, pitching staff, player cards,
-  roster move (with automatic lineup fix), 7-day and full-season sims, box
-  score, standings, leaders, bracket, save, load, new season, and EOF autosave.
-- `mlb-manager --simulate-season --seed 7` completes a full season with
-  postseason in ~4 s.
-- Calibration across seeds 7/8/42 (regular season): 4.15–4.32 R/G,
-  1.10–1.16 HR/G, .242–.245 AVG; team wins range roughly 52–105; HR leaders
-  43–52; ERA leaders ~1.9–2.2.
-- Determinism: same seed + same decisions ⇒ identical league state, also
-  after a save/load round trip (covered by tests).
+- **Test suite: `Ran 148 tests in ~54s — OK`** (`.venv/bin/python -m unittest discover -s tests`).
+  New coverage: contracts, development, draft, trades (incl. exploit cases),
+  free agency, front office, user-driven offseason, 3-season progression,
+  v1→v2 migration, mid-draft save/load determinism, front-office CLI flows.
+- Real console-script sessions (`.venv/bin/mlb-manager`) exercised: Front Office
+  screens, a rejected trade followed by an accepted CPU counter-offer, full
+  season → begin offseason → finish re-signing → draft room (sim to pick,
+  auto-draft) → free agency → 2027 season → save.
+- `scripts/league_health.py 6 11` (six seasons, automated offseasons):
+  active-roster OVR 52.2 → 54.2 (stable after year 2), R/G 4.09–4.21,
+  wins range ~52–112, median payroll $82–105M under a $125M cap, player
+  population bounded (~1,260–1,410), 3–10 CPU trades per season, six different
+  champions; every roster valid every season.
+- `mlb-manager --simulate-season --seed 7` still completes in ~4 s.
 
 ## Known limitations
-- No injuries, trades, free agency, draft or contracts.
-- AI clubs never make roster moves; the user's club is the only one managed.
-- Earned runs: only runs from batters reaching on errors (and extra-inning
-  runners) are unearned; no full reconstruction of innings without errors.
-- Season spans ~216 schedule days (vs. ~186 in MLB) because series are packed
-  in fixed blocks; there are no doubleheaders or rainouts.
-- No in-game (pitch-by-pitch) manager decisions; the user manages between games.
-- Postseason stats are not tracked separately (regular-season stats only).
-- Stolen-base volume is below modern MLB levels.
+- No injuries, awards, morale or no-trade clauses.
+- Luxury tax not implemented (hard cap only; re-signing exception).
+- User contract negotiation is take-it-or-leave-it for re-signings; free-agent
+  offers allow 85–100 % of the ask with a deterministic chance.
+- In-season development does not occur (ratings change each offseason).
+- Average active age drifts down slightly over many seasons.
+- Earlier MVP limitations still apply (≈216-day schedule, ER simplification,
+  low stolen-base volume, no in-game decisions).
