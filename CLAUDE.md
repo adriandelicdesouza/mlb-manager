@@ -2,13 +2,16 @@
 
 ## Commands
 - Install (editable, inside the project venv only): `.venv/bin/pip install -e .`
-- Run the game: `.venv/bin/mlb-manager` (or `.venv/bin/python -m mlb_manager`)
+- Run the game: `.venv/bin/mlb-manager` (Textual GUI on a terminal; `--cli` for
+  the classic numbered menus, also used automatically when stdin/stdout is not a TTY)
 - Headless season smoke test: `.venv/bin/mlb-manager --simulate-season --seed 7`
 - Tests: `.venv/bin/python -m unittest discover -s tests -v`
   - Always confirm the reported test count is non-zero ("Ran N tests").
 
 ## Constraints
-- Python 3.12+, standard library only. No external APIs, no database.
+- Python 3.12+. The simulation engine (everything outside `tui/`) is standard
+  library only; the interactive GUI uses Textual (`textual>=8.2,<9`). No
+  external APIs, no database. Domain code must never import `mlb_manager.tui`.
 - Never modify the global Python environment; use `.venv/`.
 - Commit locally in logical commits on a feature branch. Push to GitHub (`origin`)
   and merge to `main` only when the user explicitly asks for it.
@@ -44,7 +47,8 @@ presentation layer.
 | `league.py` | `League` aggregate: day advancement, phases (regular → postseason → complete → resign → draft → free_agency), results, leaders |
 | `persistence.py` | Versioned JSON save/load (atomic writes) |
 | `views.py` | Pure text rendering (tables, box scores, standings, cards) |
-| `cli.py` | Interactive terminal UI (injectable input/output for tests) |
+| `cli.py` | Classic numbered-menu terminal UI (injectable input/output for tests) |
+| `tui/` | Textual GUI: `app.py` (screens, sim worker, files), `panes.py` (dashboard, roster, lineup, trades, draft, FA, season, game), `modals.py`, `theme.py` |
 | `main.py` | argparse entry point (`mlb-manager` console script) |
 
 ## Determinism
@@ -85,7 +89,13 @@ presentation layer.
 - `tests/helpers.league_at_offseason()` skips straight to a completed season
   for fast offseason tests; replay steps on a twin league to learn the
   deterministic ids a CLI script needs.
-- Full-season tests take ~6 s each; the whole suite runs in ~85 s.
+- Full-season tests take ~6 s each; the whole suite runs in ~230 s.
+- `tests/test_tui.py` drives the GUI with Textual's `run_test()` pilot (clicks,
+  keys, resize) and asserts on league state; use `await app.workers.wait_for_complete()`
+  after simulation actions (they run in a worker thread).
+- GUI panes only call domain APIs; anything that decides game outcomes belongs in
+  the domain modules (and is then shared by CLI and GUI). Pure text helpers for
+  the GUI live in `views.py`.
 - Sim calibration targets (MLB-like): ~4.2–4.5 R/G, ~1.1 HR/G, ~.245 AVG.
   Re-check with `--simulate-season` after touching `game.py` constants.
 

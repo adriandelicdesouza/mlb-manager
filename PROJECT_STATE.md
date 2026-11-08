@@ -1,8 +1,15 @@
 # Project State
 
-_Last updated: 2026-11-08 · Version 0.5.0 (trade intelligence)_
+_Last updated: 2026-11-08 · Version 0.6.0 (interactive terminal GUI)_
 
 ## Status
+**v0.6.0 adds an interactive, mouse-enabled terminal GUI** built with Textual
+(`src/mlb_manager/tui/`). It runs on the unchanged `League`/domain APIs; the
+classic numbered-menu CLI remains (`--cli`, and automatically without a TTY).
+The engine stays standard-library only and gained opt-in play-by-play event
+recording (no RNG use) for the batter-by-batter game view.
+
+### v0.5.0 recap
 **v0.5.0 replaces the CPU trade logic** with a centralised, team-specific
 valuation model (`valuation.py`) and a negotiation layer (`trades.negotiate`):
 per-side breakdowns, acceptable/borderline/unacceptable verdicts with
@@ -47,6 +54,26 @@ league system. All 30 clubs participate in every system.
 | Awards | `awards.py` | Value formulas from stats: MVP, Cy Young, ROY (service 0), Gold Glove (≥81 games at position; P), Silver Slugger (main position) |
 | Milestones | `seasonlog.py` | 30/40/50/60 HR, 100/125/150 RBI, 200 H, 40/60 SB, 15/20 W, 200/250/300 K, 40/50 SV, no-hitters, clinches, eliminations, 10-game streaks |
 | UI | `cli.py`, `views.py`, `main.py` | Franchise menu item 14 "Front Office": Contracts & Payroll, Trade Center, Free Agency, Draft, Minor League / Prospects, Transactions; offseason steps under SIMULATE; `--salary-cap` |
+
+## Verified results (v0.6.0)
+- **Test suite: `Ran 244 tests in ~227s — OK`**. New `test_tui.py` (13, Textual pilot):
+  title screen new franchise (Select + typed seed) and load, save (Ctrl+S) with file
+  check, quit dialog (cancel/quit), keyboard and mouse navigation of every pane, Tab
+  focus, resizing to 80×24 / 100×30 / 200×60, sim buttons and keys (day, week),
+  roster profile/demote/promote/release-with-confirm, lineup and staff edits, trade
+  center selection → submit → counter → accept → players moved, incoming offer accept
+  and reject, full offseason through the sidebar (begin → re-sign → draft room pick
+  → finish draft → free agent signing → new season), Season Center tabs, game view
+  stepping (next play, space, inning, final, replay) with final score matching the
+  result, actions refused while a simulation runs; `--cli`/non-TTY use the classic UI.
+- Engine: identical game results with and without event recording (checked).
+- Real pseudo-terminal launch: `mlb-manager --new --team NYY` shows the GUI and the
+  roster pane via keys; `--cli` shows the classic franchise menu.
+- Visual check of rendered screenshots (dashboard, roster, lineup, trade, game,
+  season, title, 80×24) for layout and the restrained theme.
+- `scripts/league_health.py 6 11` reproduces the v0.5.0 run exactly (same champions,
+  OVR 53.3 → 55.4, R/G 4.12–4.32, every roster valid), confirming event recording
+  does not affect results; headless season ≈ 6.8 s.
 
 ## Verified results (v0.5.0)
 - **Test suite: `Ran 231 tests in ~143s — OK`**. New `test_trade_intelligence.py` (18):
@@ -114,6 +141,10 @@ league system. All 30 clubs participate in every system.
 - `mlb-manager --simulate-season --seed 7` still completes in ~4 s.
 
 ## Known limitations
+- The GUI game view replays the user's last game after it has been simulated
+  (no in-game decisions yet); only the user's games record play-by-play.
+- The GUI does not yet expose every classic-CLI screen (e.g. full schedule list,
+  league transactions log, morale table); they remain available with `--cli`.
 - Career statistics start with the league's first season (generated veterans
   have no synthetic past); no Hall of Fame or no-trade clauses.
 - Saves made mid-postseason with v0.3.0 have no per-round stats for games

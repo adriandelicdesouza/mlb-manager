@@ -31,7 +31,16 @@ def build_parser() -> argparse.ArgumentParser:
                         help="salary cap in $M for a new league (default: 125)")
     parser.add_argument("--simulate-season", action="store_true",
                         help="non-interactive: simulate a full season and print a summary")
+    parser.add_argument("--cli", action="store_true",
+                        help="use the classic numbered-menu interface instead of the interactive GUI")
     return parser
+
+
+def use_tui(args: argparse.Namespace) -> bool:
+    """The Textual GUI runs on an interactive terminal unless --cli is given."""
+    from mlb_manager import tui
+
+    return not args.cli and tui.available() and sys.stdin.isatty() and sys.stdout.isatty()
 
 
 def simulate_season(seed: int, team: str) -> str:
@@ -62,6 +71,20 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.salary_cap is not None and args.salary_cap <= 0:
         parser.error("--salary-cap must be positive")
+    if use_tui(args):
+        from mlb_manager import tui
+
+        league, save_path = None, None
+        if args.load:
+            try:
+                league = load_league(args.load)
+            except SaveError as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                return 1
+            save_path = args.load
+        return tui.run(league=league, save_path=save_path, save_dir=args.save_dir, salary_cap=args.salary_cap,
+                       new_team=args.team if (args.new or args.team) and league is None else None,
+                       new_seed=args.seed)
     app = App(save_dir=args.save_dir, salary_cap=args.salary_cap)
     if args.load:
         try:

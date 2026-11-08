@@ -4,12 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mlb-manager"
-version = "0.5.0"
+version = "0.6.0"
 description = "Terminal baseball franchise management and simulation game"
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [{ name = "Adrian Delic de Souza" }]
-dependencies = []
+# The simulation engine is standard-library only; Textual powers the interactive GUI
+# (the classic CLI remains available with --cli and is used automatically without it).
+dependencies = ["textual>=8.2,<9"]
 
 [project.scripts]
 mlb-manager = "mlb_manager.main:main"

@@ -108,10 +108,27 @@ financial realism.
       negotiation fatigue, deterministic evaluations (also after save/load)
 - [x] Contract implications shown for every proposal
 
-## Milestone 6 – Interactive terminal GUI (v0.6.0, next)
-- [ ] Textual-based app (mouse + keyboard) on top of the existing `League` API; classic CLI kept
-- [ ] Dashboard, roster table + player profile, lineup editing, promote/demote/release
-- [ ] Trade center, draft room, Season Center screens, compact game view (play-by-play replay)
+## Milestone 6 – Interactive terminal GUI ✅ v0.6.0
+- [x] Textual app (mouse + keyboard) on the existing `League`/domain APIs; engine untouched;
+      classic CLI kept (`--cli`, and automatically without a terminal or without Textual)
+- [x] Dark, restrained theme with a subtle club accent; persistent sidebar; status bar; footer keys
+- [x] Dashboard: record, division standing, recent results, upcoming games, payroll/cap,
+      injuries, pending offers, milestones, news
+- [x] Roster table (filters: active, minors, injured, all, pending FA) and player profile
+      (overview, contract, development, health, morale, attributes, season, career, postseason)
+- [x] Actions: promote, demote, release (confirm), IL, activate, rehab, re-sign/extend (confirm)
+- [x] Lineup & staff editing (order, bench substitutions, rotation slots, closer, auto)
+- [x] Trade center: pick assets on both sides, contract implications, submit, counteroffers,
+      incoming offers (accept/reject with confirmation); verdicts without hidden numbers
+- [x] Draft room: board with scouting grades, position filter, draft order and clock,
+      draft/sim-to-pick/auto-draft
+- [x] Free agents: market table, sign at asking price or make an offer
+- [x] Season Center tabs: standings, statistics, career leaders, awards, milestones, franchise
+      records, postseason, championships, retired players
+- [x] Game view: scoreboard, inning/outs, base runners, batter and pitcher, play log, box score;
+      step play-by-play, by inning or to the final (engine records events without using the RNG)
+- [x] Background simulation worker; offseason phase button with confirmations; save/save as/quit
+- [x] Resize handling (narrow-terminal sidebar, scrollable action bars)
 
 ## Later
 - [ ] Hall of Fame; no-trade clauses

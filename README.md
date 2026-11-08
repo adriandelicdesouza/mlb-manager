@@ -7,7 +7,9 @@ a 12-team postseason. As general manager you also draft prospects, make
 trades, sign free agents and manage contracts under a salary cap, building a
 contender over many seasons. Franchises are saved as JSON files.
 
-Pure Python 3.12+, standard library only. No network access, no database.
+Python 3.12+. The simulation engine uses only the standard library; the
+interactive interface is built with [Textual](https://textual.textualize.io/).
+No network access, no database.
 
 ## Quick start
 
@@ -16,6 +18,29 @@ python3 -m venv .venv          # if .venv does not exist yet
 .venv/bin/pip install -e .     # editable src-layout install
 .venv/bin/mlb-manager          # launch the interactive game
 ```
+
+`mlb-manager` opens the interactive GUI: a dark, compact terminal app you can
+drive with the mouse or the keyboard. The classic numbered menus are still
+there with `--cli` (and are used automatically when the program is not
+attached to a terminal).
+
+### GUI at a glance
+
+| Key | Screen | What you can do |
+| --- | --- | --- |
+| `d` | Dashboard | Record, standing, recent results, upcoming games, payroll, injuries, offers, milestones, news |
+| `r` | Roster | Filter active / minors / injured / all / pending FAs; open a player profile (click or Enter); promote, demote, IL, activate, rehab, re-sign/extend, release |
+| `l` | Lineup & staff | Reorder the batting order, start bench players, set rotation slots and the closer, auto-build |
+| `t` | Trade center | Pick a partner, click assets on both sides, see contract implications, submit, take counteroffers, review incoming offers |
+| `p` | Draft room | Prospect board with scouting grades and position filter; draft, sim to your pick, auto-draft |
+| `f` | Free agents | Market with asking prices; sign at the ask or make an offer |
+| `s` | Season center | Standings, statistics, career leaders, awards, milestones, franchise records, postseason, titles, retired players |
+| `g` | Game | Replay your latest game batter by batter: scoreboard, inning, outs, runners, batter vs pitcher, play log, box score |
+
+Sidebar buttons (or `n` / `w`) simulate a day, week, month or the rest of the
+season; in the offseason the same area advances re-signing → draft → free
+agency → next season, always with a confirmation. `Ctrl+S` saves, `q` quits
+(offering to save first). Tab moves focus between controls.
 
 Other ways to launch:
 
@@ -26,6 +51,7 @@ Other ways to launch:
 .venv/bin/mlb-manager --save-dir ~/mlb-saves         # custom save folder
 .venv/bin/mlb-manager --simulate-season --seed 7     # headless full season
 .venv/bin/mlb-manager --new --team KC --salary-cap 110  # tighter salary cap
+.venv/bin/mlb-manager --cli                          # classic numbered-menu interface
 ```
 
 Saves go to `./saves/` by default (override with `--save-dir` or the
@@ -33,7 +59,7 @@ Saves go to `./saves/` by default (override with `--save-dir` or the
 
 ## How to play
 
-From the franchise menu you can:
+In the classic CLI (`--cli`), the franchise menu offers:
 
 | # | Screen | What you can do |
 | --- | --- | --- |
